@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<title>AKS Application Routing Gateway API: Migration, Routing, and Key Vault TLS | Azure Tech Field Notes</title>
+<meta name="description" content="Migrate an internal NGINX ingress to managed Gateway API while separating current operator-managed TLS from historical manual CSI guidance.">
+<link rel="stylesheet" href="../assets/site.css">
+<script src="../assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header"><a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">AT</span><span>Azure Tech<span class="brand-subtitle">FIELD NOTES</span></span></a><nav aria-label="Site"><a href="../index.html">All topics</a><button id="theme-toggle" type="button" aria-label="Switch color theme">Switch theme</button></nav></header>
+<main id="main" class="topic-layout">
+<aside class="toc"><details open><summary>On this page</summary><ol><li><a href="#versions-and-evolution">1. Read the chronology before choosing a procedure</a></li><li><a href="#prerequisites">2. Check prerequisites and conflicting installations</a></li><li><a href="#enable-and-verify">3. Enable and verify the managed implementation</a></li><li><a href="#nginx-baseline">4. Reproduce the historical internal NGINX baseline</a></li><li><a href="#download-artifacts">5. Understand the six source YAML downloads</a></li><li><a href="#http-smoke-test">6. Test an HTTP Gateway before TLS</a></li><li><a href="#shared-gateway">7. Internal shared Gateway and namespace boundaries</a></li><li><a href="#customization">8. Customize generated resources through supported ConfigMaps</a></li><li><a href="#logging-client-ip">9. Access logs and original client IP</a></li><li><a href="#health-probe-issue">10. Historical multi-port Local health-probe issue</a></li><li><a href="#network-policy">11. Cilium policies around the Gateway</a></li><li><a href="#operator-tls-prerequisites">12. Preferred TLS path: Application Routing operator</a></li><li><a href="#vault-certificate">13. Create a vault and a development certificate</a></li><li><a href="#workload-identity">14. Bind a ServiceAccount to the vault identity</a></li><li><a href="#operator-listener">15. Enable operator-managed HTTPS listeners</a></li><li><a href="#tls-rotation">16. Rotate and troubleshoot certificates</a></li><li><a href="#manual-tls">17. Historical fallback: manual CSI synchronization</a></li><li><a href="#manual-mount-holder">18. Keep the manual sync mount alive</a></li><li><a href="#central-cert-store">19. Central certificate store and tenant isolation</a></li><li><a href="#routing-patterns">20. HTTPRoute patterns for the shared Gateway</a></li><li><a href="#limitations-and-bugs">21. Source-era support limits and managed-control-plane bug</a></li><li><a href="#migration-cutover">22. Migration and operational acceptance checklist</a></li><li><a href="#cleanup">23. Cleanup and retention cautions</a></li><li><a href="#references">References and publication boundary</a></li><li><a href="#resources">Resources</a></li><li><a href="#editorial-notes">Editorial notes</a></li></ol></details><a class="back-link" href="../index.html">&#8592; All topics</a></aside>
+<article class="article"><header class="article-header"><p class="eyebrow">AKS / FIELD NOTE</p><h1>AKS Application Routing Gateway API: Migration, Routing, and Key Vault TLS</h1><p class="lead">Migrate an internal NGINX ingress to managed Gateway API while separating current operator-managed TLS from historical manual CSI guidance.</p><div class="article-meta"><span>English edition</span><span>Parameterized examples</span><span>September 2026</span></div></header>
+<aside class="editorial-note"><strong>Environment-specific evidence.</strong> Measurements and preview behavior reflect the source investigation. They are not current service guarantees. All configuration values must be supplied for your own environment.</aside>
+<div class="article-body"><p>This consolidated runbook covers managed Application Routing Gateway API installation, an internal NGINX baseline and its conversion artifacts, shared HTTPRoute patterns, Gateway operations, and two generations of Key Vault integration. It is not the separately installed Envoy Gateway Helm product. All private environment identifiers have been removed; example.com and contoso domains are illustrative.</p><h2 id="versions-and-evolution">1. Read the chronology before choosing a procedure</h2><table><thead><tr><th>Source generation</th><th>What it establishes</th><th>How to use it now</th></tr></thead><tbody><tr><td>Internal NGINX baseline, March 19, 2026</td><td>An additional internal NGINX controller can run beside a public controller; echo app validates private ingress.</td><td>Migration baseline, not the target architecture.</td></tr><tr><td>GA guide, AKS v20260428</td><td>Managed Gateway API plus approuting-istio; tested with Kubernetes 1.34.7, Istio 1.29.2-1, Standard Gateway API v1.3.0.</td><td>Use version and region checks, noting source-era limitations and unresolved bugs.</td></tr><tr><td>Original manual Key Vault TLS guide</td><td>SPC + a continuously mounted CSI volume + Kubernetes TLS Secret + certificateRefs.</td><td>Fallback when the Application Routing operator integration cannot be used; also teaches certificate-store isolation.</td></tr><tr><td>Updated operator TLS guide</td><td>Application Routing operator automates SPC, synchronization and certificateRefs using Workload Identity.</td><td>Preferred source path where supported; no administrator-created dummy sync Deployment.</td></tr></tbody></table><blockquote>The original GA/manual documents say there is no turnkey Key Vault integration. The updated document explicitly supersedes that statement. Conversely, this TLS update deliberately does not cover ClusterExternalDNS/ExternalDNS automation. Do not interpret an old limitation as current, or imply that DNS automation has been configured by following this TLS-only article.</blockquote><p>The source's GA reference is April 28, 2026, with June checks showing the rollout finished in East US and Korea Central. Those are observations, not a live rollout report. No Azure operations were executed for this publication.</p><h2 id="prerequisites">2. Check prerequisites and conflicting installations</h2><ul><li>Azure CLI 2.86.0 or later for the GA path; a preview extension is not required.</li><li>The target region's resource-provider rollout must include v20260428 or later. Check the <a href="https://releases.aks.azure.com/">AKS Release Tracker</a>.</li><li>Use AKS Managed Gateway API installation. Self-managed Gateway API CRDs and Experimental-channel CRDs are not the source's supported configuration.</li><li>Application Routing Gateway API and the Istio service mesh add-on cannot be enabled together in the described configuration.</li><li>Inventory residual Istio CRDs and an existing istio GatewayClass before enabling this implementation. Residual mesh resources can conflict with control-plane startup.</li></ul><pre><code class="language-bash">export RESOURCE_GROUP="YOUR_RESOURCE_GROUP"
+export CLUSTER="YOUR_CLUSTER"
+export LOCATION="YOUR_AZURE_REGION"
+az --version | head -3
+az upgrade
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" --query serviceMeshProfile
+kubectl get crd | grep istio.io
+kubectl get gatewayclass istio
+kubectl get crd gateways.gateway.networking.k8s.io -o yaml | grep channel</code></pre><blockquote>The source includes deleting every Istio CRD and the istio GatewayClass as conflict cleanup. CRD deletion also deletes all associated custom resources, including VirtualService and DestinationRule objects. Back up and migrate live workloads first; disable the mesh through its supported process and delete only confirmed-unused resources. Do not run a blanket CRD deletion on a shared production cluster.</blockquote><h2 id="enable-and-verify">3. Enable and verify the managed implementation</h2><pre><code class="language-bash"># New disposable cluster: enable the prerequisite and implementation together.
+az aks create -g "$RESOURCE_GROUP" -n "$CLUSTER" -l "$LOCATION" \
+  --enable-gateway-api --enable-app-routing-istio \
+  --node-count 2 --node-vm-size Standard_D2a_v4 --generate-ssh-keys
+
+# OR an existing cluster, in this order:
+az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" --enable-gateway-api
+az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" --enable-app-routing-istio
+# Equivalent combined update:
+# az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" --enable-gateway-api --enable-app-routing-istio
+az aks get-credentials -g "$RESOURCE_GROUP" -n "$CLUSTER" --overwrite-existing
+kubectl get crd | grep gateway.networking.k8s.io
+kubectl get gatewayclass
+kubectl get pods -n aks-istio-system
+kubectl get validatingwebhookconfiguration
+kubectl get cm -n aks-istio-system istio-gateway-class-defaults</code></pre><p>Expect GatewayClass <code>approuting-istio</code>, two Running istiod Pods in the source baseline, and the <code>azure-service-mesh-ccp-validating-webhook</code>. The CRD inventory includes GatewayClass, Gateway, HTTPRoute, GRPCRoute and ReferenceGrant. If app-routing-istio is enabled first, the source observed a successful CLI command but no GatewayClass or defaults ConfigMap until managed Gateway API was also enabled.</p><table><thead><tr><th>AKS Kubernetes version in source matrix</th><th>Managed Gateway API bundle</th></tr></thead><tbody><tr><td>1.26.x–1.33.x</td><td>v1.2.1</td></tr><tr><td>1.34.x</td><td>v1.3.0</td></tr><tr><td>1.35.0+</td><td>v1.4.1</td></tr></tbody></table><pre><code class="language-bash">kubectl get crd gateways.gateway.networking.k8s.io -o jsonpath='{.metadata.annotations}'
+kubectl get deploy -n aks-istio-system istiod \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+helm list -A | grep -E 'azure-service-mesh-istio-discovery|aks-managed-overlay'</code></pre><p>If the Deployment is revision-named, discover it with <code>kubectl get deploy -n aks-istio-system -l app=istiod</code> rather than assuming the literal name istiod. The source compares the image with GA release tags asm-1-27 1.27.9-2, asm-1-28 1.28.6-1 and asm-1-29 1.29.2-1, and an add-on chart build such as v20260520-addon-260521-1. These checks help distinguish an old CLI Preview warning from the deployed build, but a date or tag alone is not a substitute for the applicable support and rollout documentation.</p><h2 id="nginx-baseline">4. Reproduce the historical internal NGINX baseline</h2><p>The historical environment used Azure CNI with Cilium, a three-node Standard_D2as_v5 pool and an already enabled Application Routing add-on. A public default controller existed; no Ingress or Gateway API resources initially existed. Actual pool names, Pod CIDR and addresses are intentionally omitted. Create an additional internal controller rather than disrupting the public one:</p><pre><code class="language-yaml">apiVersion: approuting.kubernetes.azure.com/v1alpha1
+kind: NginxIngressController
+metadata:
+  name: nginx-internal
+spec:
+  ingressClassName: nginx-internal
+  controllerNamePrefix: nginx-internal
+  loadBalancerAnnotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"</code></pre><pre><code class="language-bash">kubectl apply -f downloads/istio-gateway-api/current_env/internal-nginx-controller.yaml
+kubectl apply -f downloads/istio-gateway-api/current_env/sample-app.yaml
+kubectl get ingressclass
+kubectl get svc,pods -n app-routing-system
+kubectl get pods,svc -n demo</code></pre><p>The supplied sample-app.yaml creates namespace demo, two echo Pods using ealen/echo-server:latest, and Service echo on port 80. The image tag is historical and mutable; pin a reviewed version for production. The lab's generated internal Service was <code>nginx-internal-0</code>, with two controller Pods Running; a metrics Service exposed 10254. The source's test command inconsistently queried nginx-internal. Discover the actual generated Service and use that name.</p><p>For a minimal HTTP baseline, apply this Ingress rather than the annotation-heavy conversion fixture:</p><pre><code class="language-yaml">apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo-ingress
+  namespace: demo
+spec:
+  ingressClassName: nginx-internal
+  rules:
+  - host: echo.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: echo
+            port: {number: 80}</code></pre><pre><code class="language-bash">export NGINX_SERVICE="YOUR_DISCOVERED_NGINX_SERVICE"
+INTERNAL_IP=$(kubectl get svc -n app-routing-system "$NGINX_SERVICE" \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+kubectl run curl-test --rm -it --restart=Never --image=curlimages/curl -- \
+  curl -H "Host: echo.example.com" "http://$INTERNAL_IP/"
+kubectl get ingress -n demo</code></pre><p>Test from the cluster or a connected VNet. The historical echo response confirmed the requested Host, GET /, HTTP protocol and forwarded headers, demonstrating Internal LB → NGINX → echo. Internal and public controllers can coexist. Removing the default public NginxIngressController is optional and only safe after checking all dependent traffic.</p><h2 id="download-artifacts">5. Understand the six source YAML downloads</h2><table><thead><tr><th>File</th><th>Purpose and limitations</th></tr></thead><tbody><tr><td>current_env/internal-nginx-controller.yaml</td><td>Additional internal NginxIngressController with class nginx-internal.</td></tr><tr><td>current_env/sample-app.yaml</td><td>Namespace, two-replica echo Deployment and Service.</td></tr><tr><td>current_env/internal-ingress.yaml</td><td>Annotation-rich migration inventory, not the minimal baseline. It retains source class nginx, which does not match the supplied nginx-internal controller; TLS redirect annotations have no accompanying spec.tls.</td></tr><tr><td>current_env/converted-gateway.yaml</td><td>ingress2gateway 0.5.0 output: class nginx, HTTP listener, prefix / route and empty status fields.</td></tr><tr><td>current_env/gwapi.yaml</td><td>ingress2gateway 1.0.0 output: class nginx, regex (?i)/.*, full-path rewrite /, named rule and request timeout 20m0s. It is an intermediate conversion artifact, not validated parity.</td></tr><tr><td>tobe_env/gateway.yaml</td><td>Sanitized HTTP-only approuting-istio Gateway and echo route, with internal-LB metadata annotation and optional static-IP comment. It does not reproduce every legacy annotation.</td></tr></tbody></table><p>All six files are sanitized copies of actual source resources, not invented extractions. The target Gateway has been renamed consistently to demo-istio-gw, and the test hostname is consistently echo.example.com. Historical classes, conversion semantics and status stubs remain visible with warnings. Modern examples below use <code>spec.infrastructure.annotations</code>; verify propagation before trusting a metadata annotation in a legacy file.</p><table><thead><tr><th>Legacy annotation group preserved in the download</th><th>Values that need migration decisions</th></tr></thead><tbody><tr><td>TLS</td><td>ssl-redirect and force-ssl-redirect true; TLSv1.2/TLSv1.3; ECDHE-ECDSA-AES128-GCM-SHA256 and ECDHE-RSA-AES128-GCM-SHA256; server cipher preference</td></tr><tr><td>HSTS</td><td>Enabled; max-age 31536000; include subdomains</td></tr><tr><td>Routing</td><td>Rewrite all paths to /; HTTP backend; HTTP/2 request</td></tr><tr><td>Timeouts</td><td>Connect 30s; read, proxy-send and send 120s</td></tr><tr><td>Body and buffers</td><td>10m body/client limit; 16k proxy buffer; request/response buffering on; UTF-8; 4k client header buffer; large headers 4 × 16k</td></tr><tr><td>Keepalive</td><td>75; upstream HTTP/1.1</td></tr><tr><td>CORS</td><td>Illustrative https://app.contoso.com origin; GET, POST, PUT, DELETE, OPTIONS; Authorization, Content-Type, X-Custom-Header</td></tr><tr><td>Cookie affinity</td><td>INGRESSCOOKIE, secure, path /, expiry/max-age 3600</td></tr><tr><td>Error handling</td><td>Intercept 404 and 503; error-page-svc default backend, whose manifest is not supplied</td></tr></tbody></table><blockquote>A converter does not prove semantic equivalence. In particular, 20m0s is not the source's 120-second timeout, regex matching is implementation-specific, the class nginx is not approuting-istio, and full-path rewriting differs from prefix stripping. Review unsupported annotations and verify accepted schema, traffic, TLS, client-IP behavior, timeouts, buffers and error handling before cutover.</blockquote><h2 id="http-smoke-test">6. Test an HTTP Gateway before TLS</h2><pre><code class="language-bash">export ISTIO_RELEASE=release-1.27
+kubectl apply -f "https://raw.githubusercontent.com/istio/istio/$ISTIO_RELEASE/samples/httpbin/httpbin.yaml"</code></pre><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: httpbin-gateway
+  namespace: default
+spec:
+  gatewayClassName: approuting-istio
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces: {from: Same}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: default
+spec:
+  parentRefs:
+  - name: httpbin-gateway
+  hostnames: [httpbin.example.com]
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /get}
+    backendRefs:
+    - name: httpbin
+      port: 8000</code></pre><pre><code class="language-bash">kubectl get deployment,svc,hpa,pdb -l 'gateway.networking.k8s.io/gateway-name=httpbin-gateway'
+kubectl wait --for=condition=programmed gateway httpbin-gateway --timeout=300s
+INGRESS_HOST=$(kubectl get gateway httpbin-gateway -o jsonpath='{.status.addresses[0].value}')
+curl -s -I -H "Host: httpbin.example.com" "http://$INGRESS_HOST/get"</code></pre><p>The default is a public LoadBalancer. Expected source baseline: Deployment and Service named httpbin-gateway-approuting-istio, two replicas, HPA min 2/max 5/CPU 80%, PDB minAvailable 1, and HTTP 200. Generated names follow &lt;gateway-name&gt;-&lt;gatewayClassName&gt;; keep DNS-compatible names under the resource limit of 63 characters. The source notes the gateway.istio.io/name-override annotation for supported naming overrides.</p><h2 id="shared-gateway">7. Internal shared Gateway and namespace boundaries</h2><p>A Gateway provisions its own data plane and LB. Many per-namespace Gateways therefore mean many IPs and proxy Deployments. A shared Gateway in gateway-system lets service teams keep their HTTPRoutes in separate namespaces while sharing one entry point. The following static address and subnet are placeholders, not source environment values; replace them before applying.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: shared-gateway
+  namespace: gateway-system
+spec:
+  infrastructure:
+    annotations:
+      service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+      service.beta.kubernetes.io/azure-load-balancer-internal-subnet: "YOUR_INGRESS_SUBNET"
+      service.beta.kubernetes.io/azure-load-balancer-ipv4: "YOUR_PRIVATE_LB_IP"
+  gatewayClassName: approuting-istio
+  listeners:
+  - name: http
+    hostname: "*.contoso.io"
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            shared-gateway: "true"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: catalog-route
+  namespace: ns-catalog
+spec:
+  parentRefs:
+  - name: shared-gateway
+    namespace: gateway-system
+  hostnames: [catalog.contoso.io]
+  rules:
+  - backendRefs:
+    - name: catalog-service
+      port: 8080</code></pre><p>Create the namespaces and backend Services first; label allowed route namespaces with <code>kubectl label namespace ns-catalog shared-gateway=true</code>. The source also shows <code>from: All</code>, which permits every namespace; Selector is a narrower alternative. A hostname may be omitted to accept all hosts or set to a supported wildcard such as *.contoso.io; a bare * is not a valid hostname value. A wildcard normally excludes the apex.</p><p>HTTPRoute → Gateway attachment requires listener allowedRoutes, not ReferenceGrant. A route referring to a Service in another namespace needs a ReferenceGrant in the target namespace. A Gateway referring to a Secret elsewhere similarly needs explicit target-namespace permission. Backend Services in a route's own namespace need no cross-namespace grant. None of these API permissions replaces NetworkPolicy.</p><h2 id="customization">8. Customize generated resources through supported ConfigMaps</h2><p>Do not hand-edit generated Deployment, Service, HPA or PDB resources and expect changes to persist. The supported customization path uses YAML strings under ConfigMap data keys deployment, service, horizontalPodAutoscaler and podDisruptionBudget.</p><table><thead><tr><th>Scope</th><th>Location</th><th>Precedence</th></tr></thead><tbody><tr><td>GatewayClass defaults</td><td>aks-istio-system/istio-gateway-class-defaults</td><td>Applies to all approuting-istio Gateways; edit the existing managed ConfigMap and preserve gateway.istio.io/defaults-for-class=approuting-istio</td></tr><tr><td>Single Gateway override</td><td>A ConfigMap in the Gateway's namespace referenced by spec.infrastructure.parametersRef</td><td>Overrides matching class-default fields for that Gateway</td></tr></tbody></table><pre><code class="language-bash">kubectl edit cm istio-gateway-class-defaults -n aks-istio-system</code></pre><pre><code class="language-yaml">data:
+  deployment: |
+    metadata:
+      labels:
+        owner: platform-team
+    spec:
+      minReadySeconds: 15
+  horizontalPodAutoscaler: |
+    spec:
+      minReplicas: 3
+      maxReplicas: 6
+  podDisruptionBudget: |
+    spec:
+      minAvailable: 1</code></pre><table><thead><tr><th>Generated resource</th><th>Source allowlist highlights</th></tr></thead><tbody><tr><td>Deployment</td><td>Labels/annotations; replicas; minReadySeconds (added in v20260428); Pod labels/annotations; nodeSelector/nodeName/tolerations; node/pod/anti-affinity; topologySpreadConstraints; container resource requests/limits and resizePolicy</td></tr><tr><td>Service</td><td>Labels/annotations; type; loadBalancerSourceRanges; loadBalancerClass; externalTrafficPolicy and internalTrafficPolicy</td></tr><tr><td>HPA</td><td>minReplicas at least 2; maxReplicas; metrics; scaleUp/scaleDown behavior including stabilizationWindowSeconds, selectPolicy and policies</td></tr><tr><td>PDB</td><td>minAvailable and unhealthyPodEvictionPolicy</td></tr></tbody></table><p>Unsupported fields are rejected by the managed webhook. This is a summary, not a replacement for the current official allowlist. A PDB that prevents necessary eviction can cause UpgradeFailed/PodDrainFailure. Set replicas, distribution and disruption requirements together.</p><pre><code class="language-yaml">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: httpbin-gw-options
+  namespace: default
+data:
+  horizontalPodAutoscaler: |
+    spec:
+      minReplicas: 2
+      maxReplicas: 4
+  deployment: |
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            workload: ingress
+          tolerations:
+          - key: ingress-only
+            operator: Exists
+            effect: NoSchedule
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: httpbin-gateway
+  namespace: default
+spec:
+  gatewayClassName: approuting-istio
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: ConfigMap
+      name: httpbin-gw-options
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces: {from: Same}</code></pre><pre><code class="language-bash">kubectl get hpa httpbin-gateway-approuting-istio
+# Expect MINPODS 2 and MAXPODS 4.</code></pre><p>Use infrastructure annotations for supported LB behavior, ConfigMaps for operational Pod/Service/HPA/PDB settings, and HTTPRoute for application routing. Ensure suitable labeled/tainted nodes exist before adding node placement requirements.</p><h2 id="logging-client-ip">9. Access logs and original client IP</h2><p>The source reports that a Preview-era missing access-log issue was resolved in its GA test: Envoy JSON access logs appeared on stdout without extra configuration, on Istio 1.29.2-1. This observation refers to that build, not every environment.</p><pre><code class="language-bash">kubectl get pods -n demo -l 'gateway.networking.k8s.io/gateway-name=demo-istio-gw'
+kubectl logs -n demo "YOUR_GATEWAY_POD" --tail=50</code></pre><table><thead><tr><th>Field</th><th>Interpretation</th></tr></thead><tbody><tr><td>authority</td><td>Host header/virtual host</td></tr><tr><td>method, path, protocol</td><td>Request line</td></tr><tr><td>response_code, response_flags</td><td>Status and Envoy diagnostic flags; - means no flag, UH/UF indicate failure categories</td></tr><tr><td>route_name</td><td>Namespace, route and rule index</td></tr><tr><td>upstream_cluster, upstream_host</td><td>Selected backend cluster and Pod endpoint</td></tr><tr><td>upstream_service_time, duration</td><td>Backend and total processing time in milliseconds</td></tr><tr><td>bytes_received, bytes_sent</td><td>Payload accounting</td></tr><tr><td>x_forwarded_for, downstream_remote_address</td><td>Forwarding chain and observed peer</td></tr><tr><td>request_id, start_time, user_agent</td><td>Correlation, timestamp and caller metadata</td></tr></tbody></table><p>The original successful example had HTTP 200, 10 ms backend/total duration, zero received bytes and 1946 sent bytes. Its actual addresses, request ID and environment names are omitted. Collect stdout through Container Insights/Log Analytics, Fluent Bit/Loki or existing logging infrastructure; parse JSON in KQL/LogQL. Check the customization allowlist before attempting format changes.</p><p>With externalTrafficPolicy=Cluster, the observed client may be a node after SNAT. Set Local using a class-level or Gateway-level ConfigMap when source-IP preservation is required:</p><pre><code class="language-yaml">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-local-options
+  namespace: demo
+data:
+  service: |
+    spec:
+      externalTrafficPolicy: Local</code></pre><p>Reference this ConfigMap from the Gateway's infrastructure.parametersRef using group empty, kind ConfigMap and name gateway-local-options, or merge its data.service block into the existing options ConfigMap.</p><pre><code class="language-bash">kubectl get svc -n demo -l 'gateway.networking.k8s.io/gateway-name=demo-istio-gw' \
+  -o jsonpath='{.items[0].spec.externalTrafficPolicy}'</code></pre><pre><code class="language-kusto">ContainerLogV2
+| where PodNamespace == "demo"
+| where ContainerName has "istio-proxy" or PodName has "demo-istio-gw"
+| extend log = parse_json(LogMessage)
+| project TimeGenerated,
+          x_forwarded_for = tostring(log.x_forwarded_for),
+          downstream = tostring(log.downstream_remote_address),
+          method = tostring(log.method),
+          path = tostring(log.path),
+          status = toint(log.response_code)
+| order by TimeGenerated desc</code></pre><blockquote>Local routes only to local gateway endpoints. Confirm LB probes remove nodes without a ready gateway Pod, provide sufficient replicas, use topology spreading when appropriate, and test distribution. Uneven per-node Pod counts can produce uneven traffic. Behind another proxy, forwarded-header trust and the distinction between original client and immediate peer still matter.</blockquote><h2 id="health-probe-issue">10. Historical multi-port Local health-probe issue</h2><p>The source observed intermittent connection refused, approximately 50% success, with a multi-port generated Service (for example 15021+80 or 80+443) and externalTrafficPolicy=Local. One port's LB probe excluded nodes without Pods while another appeared healthy on every node. It attributed this to the generated Service/probe wiring around a single healthCheckNodePort and reported product-team investigation without an ETA. This is a build-specific incident report, not a general Kubernetes rule that every multi-port Local Service is broken.</p><p>The reported workaround was to add per-port probe annotations via the customization ConfigMap, not by editing the generated Service. The original reproduction showed empty values and reported success for port 80 merely from the keys being present:</p><pre><code class="language-yaml"># Historical reproduction only: these empty values are NOT a validated production probe configuration.
+data:
+  service: |
+    metadata:
+      annotations:
+        service.beta.kubernetes.io/port_80_health-probe_port:
+        service.beta.kubernetes.io/port_80_health-probe_protocol:
+        service.beta.kubernetes.io/port_80_health-probe_request-path:
+        service.beta.kubernetes.io/port_443_health-probe_port:
+        service.beta.kubernetes.io/port_443_health-probe_protocol:
+        service.beta.kubernetes.io/port_443_health-probe_request-path:
+    spec:
+      externalTrafficPolicy: Local</code></pre><blockquote>Do not deploy null annotation values as a generic fix. Determine valid string values for the actual node-level probe port, protocol and path from the Service and supported Azure LB documentation, then test every frontend rule and node. The source did not establish a working 443 configuration: SSL connection refused remained unresolved. No fix ETA or validated 443 recipe is available in these documents.</blockquote><pre><code class="language-bash">export GATEWAY_NAMESPACE="YOUR_GATEWAY_NAMESPACE"
+export GATEWAY_NAME="YOUR_GATEWAY_NAME"
+export NODE_RESOURCE_GROUP="YOUR_NODE_RESOURCE_GROUP"
+kubectl get svc -n "$GATEWAY_NAMESPACE" \
+  -l "gateway.networking.k8s.io/gateway-name=$GATEWAY_NAME" -o yaml | grep -A2 health-probe
+kubectl get svc -n "$GATEWAY_NAMESPACE" \
+  -l "gateway.networking.k8s.io/gateway-name=$GATEWAY_NAME" -o yaml \
+  | grep -A30 -E 'ports:|healthCheckNodePort|externalTrafficPolicy'
+LB=$(az network lb list -g "$NODE_RESOURCE_GROUP" --query '[0].name' -o tsv)
+az network lb probe list -g "$NODE_RESOURCE_GROUP" --lb-name "$LB" -o table
+az network lb rule list -g "$NODE_RESOURCE_GROUP" --lb-name "$LB" \
+  --query '[].{rule:name,feport:frontendPort,beport:backendPort,probe:probe.id}' -o table</code></pre><p>If there are multiple LBs, identify the one owning the Gateway frontend rather than blindly using index zero. For 443-only failures, verify an HTTPS 443 listener, correct certificateRefs and Secret namespace, successful CSI/operator synchronization, the Service's 443 port and endpoints, Envoy listener/TLS logs, and the Azure 443 rule-to-probe/backend mapping. Intermittent per-node failure and total listener/TLS failure need different diagnoses.</p><h2 id="network-policy">11. Cilium policies around the Gateway</h2><p>A centralized NGINX controller previously required opening one namespace. Per-namespace Gateways move proxy endpoints into their own namespaces, so existing allow rules may no longer cover ingress. Standard NetworkPolicy works with Cilium, but the following uses CiliumNetworkPolicy to express entities. Verify the actual gateway Pod label before applying; the source uses istio.io/gateway-name while generated-resource inspection also uses gateway.networking.k8s.io/gateway-name.</p><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-ingress-to-gateway
+  namespace: demo
+spec:
+  endpointSelector:
+    matchLabels:
+      istio.io/gateway-name: demo-istio-gw
+  ingress:
+  - fromEntities: [world, cluster, health, remote-node]
+    toPorts:
+    - ports:
+      - {port: "80", protocol: TCP}
+      - {port: "443", protocol: TCP}
+      - {port: "15021", protocol: TCP}</code></pre><table><thead><tr><th>Entity</th><th>Meaning</th></tr></thead><tbody><tr><td>world</td><td>External addresses outside the cluster; broad, not an application allowlist</td></tr><tr><td>cluster</td><td>Cluster endpoints/hosts; broadly opens internal traffic</td></tr><tr><td>host</td><td>The endpoint's local node</td></tr><tr><td>remote-node</td><td>Other nodes, including some SNAT/probe paths</td></tr><tr><td>health</td><td>Cilium health endpoints, not a synonym for Azure LoadBalancer probes</td></tr><tr><td>kube-apiserver</td><td>API server, not required in this ingress example</td></tr></tbody></table><p>Ports 80 and 443 carry application traffic; 15021 is the Istio status/readiness endpoint. The broad example grants more than namespace isolation. For a narrower model, the source separates public traffic, health traffic and approved namespaces. The following makes the local-node health allowance explicit:</p><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: restricted-ingress-to-gateway
+  namespace: demo
+spec:
+  endpointSelector:
+    matchLabels:
+      istio.io/gateway-name: demo-istio-gw
+  ingress:
+  - fromEntities: [world]
+    toPorts:
+    - ports:
+      - {port: "80", protocol: TCP}
+      - {port: "443", protocol: TCP}
+  - fromEntities: [host, remote-node, health]
+    toPorts:
+    - ports:
+      - {port: "15021", protocol: TCP}
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: frontend-allowed
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: another-allowed
+    toPorts:
+    - ports:
+      - {port: "80", protocol: TCP}
+      - {port: "443", protocol: TCP}</code></pre><blockquote>Use the broad and narrow examples as alternatives. Cilium allow policies are additive; leaving the broad rule installed defeats the narrow rule. With externalTrafficPolicy=Cluster, external traffic may appear as remote-node after SNAT. Closing remote-node on 80/443 can therefore break external access. Validate Local and its health probes first, then tighten sources. Confirm actual probe source identities and port translation instead of assuming this template matches every AKS network path.</blockquote><p>For scalable namespace membership, label approved namespaces, but use Cilium's namespace-label representation, not an unqualified Pod label. The source shows an unqualified access-to-demo-gw selector; inspect endpoint identities and use the correctly qualified key for your version:</p><pre><code class="language-bash">kubectl label ns frontend-allowed access-to-demo-gw=true
+kubectl label ns another-allowed access-to-demo-gw=true</code></pre><pre><code class="language-yaml">fromEndpoints:
+- matchLabels:
+    k8s:io.cilium.k8s.namespace.labels.access-to-demo-gw: "true"</code></pre><pre><code class="language-bash">kubectl exec -n kube-system ds/cilium -- cilium monitor --type drop | grep "YOUR_GATEWAY_POD_IP"
+kubectl exec -n kube-system ds/cilium -- cilium endpoint list | grep demo</code></pre><p>Run diagnostics on the node hosting the relevant endpoint; a DaemonSet exec may select a different node. The source leaves Gateway-to-backend cross-namespace policy validation as future work. Explicitly allow required backend ingress, gateway egress, DNS, health and control-plane communication with aks-istio-system where policies isolate them. A policy isolates selected directions on selected Pods, not every Pod in a namespace automatically.</p><h2 id="operator-tls-prerequisites">12. Preferred TLS path: Application Routing operator</h2><p>The operator watches listeners of GatewayClass approuting-istio with two TLS options: <code>kubernetes.azure.com/tls-cert-keyvault-uri</code> and <code>kubernetes.azure.com/tls-cert-service-account</code>. It creates an SPC named kv-gw-cert-&lt;gateway&gt;-&lt;listener&gt;, coordinates CSI synchronization to a same-named kubernetes.io/tls Secret in the Gateway namespace, and patches certificateRefs. CSI still fetches the material; the operator automates the chain. No administrator-maintained dummy Deployment is needed in this path.</p><ul><li>Enable both the Application Routing operator and the Application Routing Istio Gateway implementation, plus managed Gateway API.</li><li>Enable OIDC issuer and Microsoft Entra Workload Identity.</li><li>Enable Azure Key Vault provider for Secrets Store CSI Driver.</li><li>Have permissions to create role assignments, UAMI and federated identity credentials, such as appropriately scoped Owner or RBAC Administrator plus Managed Identity Contributor.</li><li>Existing NGINX users can keep NGINX running while enabling the Gateway implementation; OIDC/Workload Identity may still need enabling.</li></ul><pre><code class="language-bash">az aks approuting enable -g "$RESOURCE_GROUP" -n "$CLUSTER" --enable-kv
+az aks approuting gateway istio enable -g "$RESOURCE_GROUP" -n "$CLUSTER"
+az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --enable-oidc-issuer --enable-workload-identity
+# Managed Gateway API must already be enabled as in section 3.
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --query 'addonProfiles.azureKeyvaultSecretsProvider.enabled'
+kubectl get pods -n kube-system -l app=secrets-store-csi-driver
+kubectl get pods -n kube-system -l app=secrets-store-provider-azure</code></pre><p>The source also expresses these as create/update flags --enable-app-routing and --enable-app-routing-istio. Both components are required. If the CSI add-on is already enabled, --enable-kv may be omitted; redundant enablement is described as idempotent. Legacy --attach-kv and --attach-zones configure the old NGINX add-on identity, not the UAMI/Workload Identity model below.</p><h2 id="vault-certificate">13. Create a vault and a development certificate</h2><pre><code class="language-bash">export KV_NAME="YOUR_KEY_VAULT_NAME"
+export UAMI_NAME="YOUR_MANAGED_IDENTITY_NAME"
+az keyvault create --name "$KV_NAME" --resource-group "$RESOURCE_GROUP" \
+  --location "$LOCATION" --enable-rbac-authorization true --enable-purge-protection true
+az keyvault show --name "$KV_NAME" --resource-group "$RESOURCE_GROUP" \
+  --query 'properties.{rbac:enableRbacAuthorization,uri:vaultUri}'</code></pre><p>Choose a globally unique valid vault name. Purge protection is recommended for production and prevents early permanent deletion during retention. The certificate creator needs Key Vault Certificates Officer or an appropriate administrator role; deployment ownership alone does not automatically grant data-plane access.</p><pre><code class="language-bash">cat &gt; cert-policy.json &lt;&lt;'EOF'
+{
+  "issuerParameters": {"name": "Self"},
+  "keyProperties": {"exportable": true, "keyType": "RSA", "keySize": 2048, "reuseKey": false},
+  "secretProperties": {"contentType": "application/x-pkcs12"},
+  "x509CertificateProperties": {
+    "subject": "CN=*.example.com",
+    "subjectAlternativeNames": {"dnsNames": ["*.example.com", "example.com"]},
+    "validityInMonths": 12,
+    "keyUsage": ["digitalSignature", "keyEncipherment"]
+  }
+}
+EOF
+az keyvault certificate create --vault-name "$KV_NAME" \
+  --name approuting-demo-cert --policy @cert-policy.json
+export CERT_URI=$(az keyvault certificate show --vault-name "$KV_NAME" \
+  --name approuting-demo-cert --query id -o tsv | sed 's|/[^/]*$||')</code></pre><p>This self-signed certificate is for testing only. Import a trusted CA-issued certificate with <code>az keyvault certificate import</code> for production. Use an unversioned certificates URI, structurally <code>https://YOUR_KEY_VAULT_NAME.vault.azure.net/certificates/YOUR_CERTIFICATE_NAME</code>, so the integration can follow new versions.</p><h2 id="workload-identity">14. Bind a ServiceAccount to the vault identity</h2><pre><code class="language-bash">az identity create --resource-group "$RESOURCE_GROUP" --name "$UAMI_NAME" --location "$LOCATION"
+export UAMI_CLIENT_ID=$(az identity show -g "$RESOURCE_GROUP" -n "$UAMI_NAME" --query clientId -o tsv)
+export UAMI_PRINCIPAL_ID=$(az identity show -g "$RESOURCE_GROUP" -n "$UAMI_NAME" --query principalId -o tsv)
+az role assignment create --assignee-object-id "$UAMI_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal --role "Key Vault Secrets User" \
+  --scope "$(az keyvault show --name "$KV_NAME" --query id -o tsv)"
+export OIDC_ISSUER=$(az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" --query oidcIssuerProfile.issuerUrl -o tsv)
+export SA_NAME=approuting-demo-sa
+for ns in app-a app-b; do
+  kubectl create namespace "$ns"
+  az identity federated-credential create --identity-name "$UAMI_NAME" \
+    --resource-group "$RESOURCE_GROUP" --name "approuting-demo-fic-$ns" \
+    --issuer "$OIDC_ISSUER" --subject "system:serviceaccount:$ns:$SA_NAME" \
+    --audiences "api://AzureADTokenExchange"
+  kubectl apply -n "$ns" -f - &lt;&lt;EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: $SA_NAME
+  annotations:
+    azure.workload.identity/client-id: $UAMI_CLIENT_ID
+  labels:
+    azure.workload.identity/use: "true"
+EOF
+done</code></pre><p>The TLS sync identity needs Key Vault Secrets User because private key-bearing certificate material is retrieved through the vault's secret surface. A federated credential is required for each namespace/ServiceAccount pair, with exact issuer, subject and audience. Allow time for identity/RBAC propagation; the source observed a typical one-to-three-minute wait.</p><blockquote>The source places azure.workload.identity/use=true on the ServiceAccount and describes it as token-injection configuration. Ordinary Workload Identity mutation is triggered on the consuming Pod, not solely by a ServiceAccount label. The operator manages the consuming resources in this integration: inspect the generated workload/token wiring and current official requirements if federation fails. Do not assume the SA label alone injects a token into arbitrary application Pods.</blockquote><h3>Shared Gateway identity scope</h3><p>If the Gateway is only in gateway-system and HTTPRoutes are in several service namespaces, create the ServiceAccount, FIC and TLS configuration only for gateway-system. The operator-generated SPC and Secret also live there. Service namespaces that only contain HTTPRoutes do not need duplicate certificate identities. Set allowedRoutes to All or a restricted Selector and use cross-namespace parentRefs. No ReferenceGrant is needed for this route-to-Gateway attachment or a same-namespace Secret.</p><h2 id="operator-listener">15. Enable operator-managed HTTPS listeners</h2><pre><code class="language-bash">for ns in app-a app-b; do
+  kubectl apply -n "$ns" -f https://raw.githubusercontent.com/istio/istio/release-1.27/samples/httpbin/httpbin.yaml
+done
+for pair in "app-a:a" "app-b:b"; do
+  ns=${pair%%:*}
+  sub=${pair##*:}
+  fqdn=${sub}.example.com
+  kubectl apply -n "$ns" -f - &lt;&lt;EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ${sub}-gateway
+  labels:
+    app: approuting-demo
+    zone: ${sub}
+spec:
+  gatewayClassName: approuting-istio
+  listeners:
+  - name: https
+    hostname: $fqdn
+    port: 443
+    protocol: HTTPS
+    tls:
+      mode: Terminate
+      options:
+        kubernetes.azure.com/tls-cert-keyvault-uri: $CERT_URI
+        kubernetes.azure.com/tls-cert-service-account: $SA_NAME
+    allowedRoutes:
+      namespaces: {from: Same}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${sub}-route
+spec:
+  parentRefs:
+  - name: ${sub}-gateway
+  hostnames: ["$fqdn"]
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /get}
+    backendRefs:
+    - name: httpbin
+      port: 8000
+EOF
+done
+kubectl wait -n app-a --for=condition=programmed gateway a-gateway --timeout=300s
+kubectl wait -n app-b --for=condition=programmed gateway b-gateway --timeout=300s
+kubectl get secretproviderclass,secret -n app-a
+kubectl get secretproviderclass,secret -n app-b</code></pre><p>Expected in app-a: SPC and TLS Secret kv-gw-cert-a-gateway-https, with two Secret data entries. app-b uses the corresponding b-gateway name. Do not manually compete with the operator over certificateRefs.</p><pre><code class="language-bash">GATEWAY_IP=$(kubectl get -n app-a gateway a-gateway -o jsonpath='{.status.addresses[0].value}')
+# Self-signed lab only: -k bypasses server certificate verification.
+curl -k -I --resolve "a.example.com:443:${GATEWAY_IP}" "https://a.example.com/get"
+# For trusted certificates, omit -k or use --cacert YOUR_CA_CHAIN_FILE.</code></pre><p>A successful source test expects HTTP/2 200 with the synchronized certificate. --resolve bypasses DNS delegation for the test while preserving TLS SNI and Host.</p><h2 id="tls-rotation">16. Rotate and troubleshoot certificates</h2><pre><code class="language-bash">az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --enable-secret-rotation --rotation-poll-interval 2m
+az keyvault certificate create --vault-name "$KV_NAME" \
+  --name approuting-demo-cert --policy @cert-policy.json
+az keyvault certificate show --vault-name "$KV_NAME" --name approuting-demo-cert \
+  --query x509ThumbprintHex -o tsv
+kubectl -n app-a get secret kv-gw-cert-a-gateway-https -o jsonpath='{.data.tls\.crt}' \
+  | base64 -d | openssl x509 -noout -fingerprint -sha1</code></pre><p>Use an unversioned URI and enable rotation. The source expects the Secret and Envoy configuration to follow the next poll. Normalize colon separators/case when comparing thumbprints, and also verify the certificate actually served over a new TLS connection. A Secret fingerprint alone does not prove the live listener updated. Avoid overly short intervals that risk vault throttling.</p><table><thead><tr><th>Symptom</th><th>Checks</th></tr></thead><tbody><tr><td>Programmed False; no SPC/Secret</td><td>Both operator and Gateway implementation enabled; correct GatewayClass and both TLS option keys</td></tr><tr><td>Mount/permission failure</td><td>UAMI has Key Vault Secrets User at correct scope; wait for propagation; check vault network access</td></tr><tr><td>SPC exists but Secret missing</td><td>FIC issuer/subject/audience, namespace/SA name, client-id annotation and generated consuming workload identity</td></tr><tr><td>Old certificate remains</td><td>Unversioned URI, rotation enabled, operator/CSI health, updated Secret and actual TLS handshake</td></tr><tr><td>Different GatewayClass</td><td>This source's operator integration supports approuting-istio only, not the mesh GatewayClass</td></tr></tbody></table><h2 id="manual-tls">17. Historical fallback: manual CSI synchronization</h2><p>Use this separate path only when the operator integration is unavailable or a deliberately centralized certificate-store design requires it. In the original manual model, declaring an SPC does not itself start synchronization. Envoy consumes a Kubernetes Secret through control-plane/API configuration, not by mounting that SPC. A continuously mounted CSI volume supplies the synchronization trigger. The updated operator path removes the need for an administrator-created mount holder.</p><h3>Enable CSI and authorize its identity</h3><pre><code class="language-bash">export AKV_NAME="$KV_NAME"
+export APP_NS=demo
+az aks enable-addons --addons azure-keyvault-secrets-provider \
+  --resource-group "$RESOURCE_GROUP" --name "$CLUSTER"
+CLIENT_ID=$(az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --query 'addonProfiles.azureKeyvaultSecretsProvider.identity.clientId' -o tsv | tr -d '\r')
+OBJECT_ID=$(az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --query 'addonProfiles.azureKeyvaultSecretsProvider.identity.objectId' -o tsv | tr -d '\r')
+TENANT_ID=$(az keyvault show -g "$RESOURCE_GROUP" -n "$AKV_NAME" --query properties.tenantId -o tsv | tr -d '\r')
+AKV_SCOPE=$(az keyvault show -g "$RESOURCE_GROUP" -n "$AKV_NAME" --query id -o tsv | tr -d '\r')
+az role assignment create --role "Key Vault Secrets User" \
+  --assignee-object-id "$OBJECT_ID" --assignee-principal-type ServicePrincipal --scope "$AKV_SCOPE"
+# Optional certificate access: validate role availability and data actions for your operation.
+az role assignment create --role "Key Vault Certificate User" \
+  --assignee-object-id "$OBJECT_ID" --assignee-principal-type ServicePrincipal --scope "$AKV_SCOPE"</code></pre><p>This identity is the CSI add-on's automatically created user-assigned identity, not the operator path's explicit UAMI/FIC. If the vault instead uses the legacy access-policy model, grant secret get/list and certificate get/list through <code>az keyvault set-policy --name "$AKV_NAME" --object-id "$OBJECT_ID" --secret-permissions get list --certificate-permissions get list</code>. Do not mix RBAC and access-policy assumptions.</p><pre><code class="language-bash"># The person importing certificates/secrets also needs appropriate data-plane roles.
+ME_OBJECT_ID=$(az ad signed-in-user show --query id -o tsv)
+az role assignment create --role "Key Vault Certificates Officer" \
+  --assignee-object-id "$ME_OBJECT_ID" --assignee-principal-type User --scope "$AKV_SCOPE"
+az role assignment create --role "Key Vault Secrets Officer" \
+  --assignee-object-id "$ME_OBJECT_ID" --assignee-principal-type User --scope "$AKV_SCOPE"
+kubectl create namespace "$APP_NS" --dry-run=client -o yaml | kubectl apply -f -</code></pre><h3>Development certificate and two storage choices</h3><p>The manual source creates a 365-day RSA-2048 test root and server certificate with OpenSSL. Its server certificate lacks a SAN; the following explicitly adds one so hostname verification can work. Private keys are local test material: never commit them or publish their contents.</p><pre><code class="language-bash">mkdir -p httpbin_certs
+openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 \
+  -subj '/O=example Inc./CN=example.com' \
+  -keyout httpbin_certs/example.com.key -out httpbin_certs/example.com.crt
+openssl req -out httpbin_certs/httpbin.example.com.csr -newkey rsa:2048 -nodes \
+  -keyout httpbin_certs/httpbin.example.com.key \
+  -subj '/CN=httpbin.example.com/O=httpbin organization'
+printf 'subjectAltName=DNS:httpbin.example.com\n' &gt; httpbin_certs/server.ext
+openssl x509 -req -sha256 -days 365 -CA httpbin_certs/example.com.crt \
+  -CAkey httpbin_certs/example.com.key -set_serial 0 \
+  -in httpbin_certs/httpbin.example.com.csr -out httpbin_certs/httpbin.example.com.crt \
+  -extfile httpbin_certs/server.ext
+
+# A: store separate PEM key and certificate secrets.
+az keyvault secret set --vault-name "$AKV_NAME" --name test-httpbin-key --file httpbin_certs/httpbin.example.com.key
+az keyvault secret set --vault-name "$AKV_NAME" --name test-httpbin-crt --file httpbin_certs/httpbin.example.com.crt
+
+# B: combine into a PFX and import a certificate object.
+# OpenSSL prompts for an export password; do not put real passwords into a published script.
+openssl pkcs12 -export -inkey httpbin_certs/httpbin.example.com.key \
+  -in httpbin_certs/httpbin.example.com.crt -out httpbin_certs/httpbin.example.com.pfx
+az keyvault certificate import --vault-name "$AKV_NAME" \
+  --name test-httpbin-cert-pfx --file httpbin_certs/httpbin.example.com.pfx \
+  --password "$YOUR_PFX_PASSWORD"</code></pre><blockquote>The source's PFX export/import block contains a pre-existing masked/broken line. Its hidden content is not reconstructed. The two explicit commands above express the intended operations with a caller-supplied password variable. Certificate-object storage enables Key Vault certificate metadata, expiration monitoring and rotation; choose a provider-supported private-key encoding.</blockquote><h3>SPC for two separate PEM secrets</h3><p>Render the shell variables in this YAML before applying; kubectl does not expand variables in a file. The mounted object aliases and secretObjects objectName values must agree.</p><pre><code class="language-yaml">apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: httpbin-credential-spc
+  namespace: demo
+spec:
+  provider: azure
+  secretObjects:
+  - secretName: httpbin-credential
+    type: kubernetes.io/tls
+    data:
+    - objectName: test-httpbin-key
+      key: tls.key
+    - objectName: test-httpbin-crt
+      key: tls.crt
+  parameters:
+    useVMManagedIdentity: "true"
+    userAssignedIdentityID: "$CLIENT_ID"
+    keyvaultName: "$AKV_NAME"
+    cloudName: ""
+    objects: |
+      array:
+        - |
+          objectName: test-httpbin-key
+          objectType: secret
+          objectAlias: test-httpbin-key
+        - |
+          objectName: test-httpbin-crt
+          objectType: secret
+          objectAlias: test-httpbin-crt
+    tenantId: "$TENANT_ID"</code></pre><h3>Certificate-object variant from the source</h3><p>The manual document replaces the objects array with the following while keeping the same Secret alias mapping:</p><pre><code class="language-yaml">objects: |
+  array:
+    - |
+      objectName: test-httpbin-cert-pfx
+      objectType: secret
+      objectAlias: test-httpbin-key
+    - |
+      objectName: test-httpbin-cert-pfx
+      objectType: cert
+      objectAlias: test-httpbin-crt</code></pre><blockquote>This alias pattern is preserved as source guidance, not proof that a raw PFX secret is automatically converted into a valid tls.key. objectAlias renames mounted content; certificate/private-key formats depend on the provider and object format. Validate that tls.crt contains the PEM certificate and tls.key a matching PEM private key with the installed provider before use. Do not assume every objectType=cert operation uses the secret API: certificate retrieval and private-key-bearing secret retrieval have different permission/format semantics. The source's blanket claim is overbroad.</blockquote><p>Omit objectVersion to follow the latest material; setting it pins that object version and blocks automatic rotation to newer versions.</p><h2 id="manual-mount-holder">18. Keep the manual sync mount alive</h2><pre><code class="language-yaml">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secrets-store-sync-httpbin
+  namespace: demo
+  labels: {app: secrets-store-sync-httpbin}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: secrets-store-sync-httpbin}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels: {app: secrets-store-sync-httpbin}
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels: {app: secrets-store-sync-httpbin}
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: pause
+        image: mcr.microsoft.com/oss/kubernetes/pause:3.6
+        resources:
+          requests: {cpu: "10m", memory: "16Mi"}
+          limits: {cpu: "50m", memory: "32Mi"}
+        volumeMounts:
+        - name: secrets-store01-inline
+          mountPath: /mnt/secrets-store
+          readOnly: true
+      volumes:
+      - name: secrets-store01-inline
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: httpbin-credential-spc</code></pre><pre><code class="language-bash">kubectl -n "$APP_NS" get deploy secrets-store-sync-httpbin
+kubectl -n "$APP_NS" get pod -l app=secrets-store-sync-httpbin -o wide
+kubectl -n "$APP_NS" describe secret httpbin-credential</code></pre><p>A Deployment recreates evicted Pods; a bare Pod does not. Two replicas with preferred anti-affinity and maxUnavailable=0 improve resilience but do not guarantee separate-node placement or survival of every failure. Check actual placement and disruption handling. This is a low-resource mount holder, not a traffic-serving app.</p><blockquote>The source claims a synchronized Secret necessarily remains after all consumers stop. Do not rely on that: CSI synchronized Secret lifetime may be tied to consuming Pods and garbage collection. Even if a Secret temporarily remains, rotation stops without a mount. Maintain the mount holder throughout the manual integration's lifetime.</blockquote><h3>Manual HTTPS listener and route</h3><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: httpbin-gateway
+  namespace: demo
+spec:
+  gatewayClassName: approuting-istio
+  listeners:
+  - name: https
+    hostname: httpbin.example.com
+    port: 443
+    protocol: HTTPS
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: httpbin-credential
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            kubernetes.io/metadata.name: demo
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: demo
+spec:
+  parentRefs:
+  - name: httpbin-gateway
+  hostnames: [httpbin.example.com]
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /status}
+    - path: {type: PathPrefix, value: /delay}
+    backendRefs:
+    - name: httpbin
+      port: 8000</code></pre><pre><code class="language-bash">kubectl apply -n "$APP_NS" -f https://raw.githubusercontent.com/istio/istio/release-1.27/samples/httpbin/httpbin.yaml
+kubectl wait -n "$APP_NS" --for=condition=programmed gateway httpbin-gateway --timeout=300s
+INGRESS_HOST=$(kubectl get -n "$APP_NS" gateway httpbin-gateway -o jsonpath='{.status.addresses[0].value}')
+SECURE_INGRESS_PORT=$(kubectl get -n "$APP_NS" gateway httpbin-gateway -o jsonpath='{.spec.listeners[?(@.name=="https")].port}')
+curl -v --resolve "httpbin.example.com:$SECURE_INGRESS_PORT:$INGRESS_HOST" \
+  --cacert httpbin_certs/example.com.crt \
+  "https://httpbin.example.com:$SECURE_INGRESS_PORT/status/418"</code></pre><p>The expected response is HTTP/2 418, the httpbin test status, not a routing failure. certificateRefs.name must equal secretObjects.secretName. Enable the same two-minute rotation option described earlier and upload a new certificate version. For separate key/crt secrets, update a matching pair; uploading only a new certificate with a different key breaks TLS. Compare the vault thumbprint, Secret certificate fingerprint and served TLS certificate. Logs help diagnose handshakes but alone are not fingerprint proof.</p><h2 id="central-cert-store">19. Central certificate store and tenant isolation</h2><p>In the manual per-Gateway pattern, placing SPC and sync Pods in every namespace duplicates maintenance. An alternative is cert-store containing one SPC, one two-replica sync Deployment and one or more TLS Secrets, with explicit ReferenceGrants allowing other namespaces' Gateways to reference those Secrets. This is different from a single shared Gateway: here multiple Gateways reuse centralized certificates.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: gw-can-read-tls-secret
+  namespace: cert-store
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    namespace: tenant-a
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    namespace: tenant-b
+  to:
+  - group: ""
+    kind: Secret
+    name: httpbin-credential</code></pre><pre><code class="language-yaml"># Listener fragment on a Gateway in tenant-a or tenant-b:
+tls:
+  mode: Terminate
+  certificateRefs:
+  - kind: Secret
+    namespace: cert-store
+    name: httpbin-credential</code></pre><p>Without the target namespace's permission, the source reports ResolvedRefs=False with RefNotPermitted and the affected listener not being programmed. Other same-namespace references/listeners need not fail. Verify actual listener conditions rather than treating the entire Pod as broken.</p><pre><code class="language-bash">kubectl describe gateway "YOUR_GATEWAY_NAME" -n "YOUR_APP_NAMESPACE"
+kubectl get gateway "YOUR_GATEWAY_NAME" -n "YOUR_APP_NAMESPACE" \
+  -o jsonpath='{.status.listeners[*].conditions[?(@.type=="ResolvedRefs")]}'</code></pre><h3>One vault, several certificates</h3><p>Both SPC objects and secretObjects are arrays. To reproduce the source's two-certificate example, create SPC all-tls-spc in cert-store with the same identity/vault/tenant fields as above; use the following object aliases and Secret mappings. The certificate-object format caveat in section 17 still applies.</p><pre><code class="language-yaml"># spec.parameters.objects fragment:
+objects: |
+  array:
+    - |
+      objectName: tenant-a-cert-pfx
+      objectType: secret
+      objectAlias: tenant-a-key
+    - |
+      objectName: tenant-a-cert-pfx
+      objectType: cert
+      objectAlias: tenant-a-crt
+    - |
+      objectName: tenant-b-cert-pfx
+      objectType: secret
+      objectAlias: tenant-b-key
+    - |
+      objectName: tenant-b-cert-pfx
+      objectType: cert
+      objectAlias: tenant-b-crt
+# Corresponding spec.secretObjects:
+secretObjects:
+- secretName: tls-tenant-a
+  type: kubernetes.io/tls
+  data:
+  - {objectName: tenant-a-crt, key: tls.crt}
+  - {objectName: tenant-a-key, key: tls.key}
+- secretName: tls-tenant-b
+  type: kubernetes.io/tls
+  data:
+  - {objectName: tenant-b-crt, key: tls.crt}
+  - {objectName: tenant-b-key, key: tls.key}</code></pre><p>Move the sync Deployment into cert-store and change its secretProviderClass to all-tls-spc. One mounted volume then covers that SPC's objects. Each Gateway references its intended TLS Secret in cert-store.</p><blockquote>ReferenceGrant permissions are the Cartesian product of from[] and to[]. Putting tenant-a and tenant-b plus both TLS Secrets into one grant lets each tenant reference both Secrets. For tenant isolation, make one grant per authorized namespace/Secret pair. Namespace grants also authorize that namespace's Gateways generally, not a single named Gateway.</blockquote><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: tenant-a-to-own-certificate
+  namespace: cert-store
+spec:
+  from:
+  - {group: gateway.networking.k8s.io, kind: Gateway, namespace: tenant-a}
+  to:
+  - {group: "", kind: Secret, name: tls-tenant-a}
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: tenant-b-to-own-certificate
+  namespace: cert-store
+spec:
+  from:
+  - {group: gateway.networking.k8s.io, kind: Gateway, namespace: tenant-b}
+  to:
+  - {group: "", kind: Secret, name: tls-tenant-b}</code></pre><p>If all tenants are intentionally allowed to use every certificate, one broad grant is simpler but less isolated. Add certificate objects, Secret mappings and a per-pair grant for each new isolated tenant. Split SPCs when certificates belong to different vaults (keyvaultName is per SPC), when large object counts create polling/throttling pressure, or when ownership/change cadence warrants a smaller failure impact.</p><p>Multiple SPCs can still share one sync Deployment: mount one CSI volume per SPC, with corresponding volumeMounts. The source's volume-only sketch is:</p><pre><code class="language-yaml">volumes:
+- name: cert-a
+  csi:
+    driver: secrets-store.csi.k8s.io
+    readOnly: true
+    volumeAttributes: {secretProviderClass: spc-cert-a}
+- name: cert-b
+  csi:
+    driver: secrets-store.csi.k8s.io
+    readOnly: true
+    volumeAttributes: {secretProviderClass: spc-cert-b}</code></pre><p>For manual troubleshooting, check missing mount holders, CSI identity permissions, alias/Secret name mismatches, pinned versions, rotation settings, replica placement and ReferenceGrants. Consider Key Vault expiry alerts through Event Grid to a webhook or Logic App. If Key Vault need not be the source of truth, cert-manager with Azure DNS or a supported Gateway HTTPRoute solver is a separate alternative, not configured here.</p><h2 id="routing-patterns">20. HTTPRoute patterns for the shared Gateway</h2><p>All patterns below use the standard Gateway API, not VirtualService or EnvoyFilter. Create application namespaces and referenced Services first. The common route envelope is shown once; subsequent rules are fragments to place under the same envelope with the indicated route name, namespace, hostname and listener. They are separate examples, not one set to apply together; overlapping routes require deliberate conflict resolution.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: YOUR_ROUTE_NAME
+  namespace: YOUR_ROUTE_NAMESPACE
+spec:
+  parentRefs:
+  - name: shared-gateway
+    namespace: gateway-system
+    sectionName: https
+  hostnames: [api.contoso.io]
+  rules: []</code></pre><p>Replace YOUR_ placeholders with valid lowercase Kubernetes names. The https examples require a matching HTTPS listener and certificate on shared-gateway; the HTTP-only Gateway in section 7 does not provide that listener. A Service port is the Service's port, not necessarily the container port.</p><h3>Path routing plus fallback</h3><p>For console-route in ns-console, hostname console.contoso.io: /orders/list reaches orders-service:8080 as /list, and every other path reaches web-frontend:80.</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /orders}
+  filters:
+  - type: URLRewrite
+    urlRewrite:
+      path: {type: ReplacePrefixMatch, replacePrefixMatch: /}
+  backendRefs:
+  - {name: orders-service, port: 8080}
+- matches:
+  - path: {type: PathPrefix, value: /}
+  backendRefs:
+  - {name: web-frontend, port: 80}</code></pre><p>The catch-all is a path fallback, not interception of a backend 5xx response. Longer prefixes take precedence regardless of list order; put the fallback last for readability.</p><h3>Request timeout</h3><p>For reports-timeout in ns-reports, reports.contoso.io on listener https:</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /reports}
+  backendRefs:
+  - {name: reports-service, port: 8080}
+  timeouts:
+    request: 800ms</code></pre><p>The request timeout bounds gateway processing of the request/response; exceeding the supported timeout can produce 504. It is not simply time to the first backend byte. backendRequest can separately constrain an individual backend attempt and must fit within request when both are set. Use supported duration values such as 300ms, 2s or 1m. Choose longer limits for batch/report APIs and shorter ones for latency-sensitive calls.</p><h3>Request and response header modification</h3><p>For header-modify-demo in ns-demo, echo.contoso.io → echo-service:8080:</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /}
+  filters:
+  - type: RequestHeaderModifier
+    requestHeaderModifier:
+      add:
+      - {name: x-forwarded-by, value: contoso-gateway}
+  - type: ResponseHeaderModifier
+    responseHeaderModifier:
+      add:
+      - {name: x-served-by, value: approuting-istio}
+      set:
+      - {name: cache-control, value: no-store}
+  backendRefs:
+  - {name: echo-service, port: 8080}</code></pre><p>add appends, set replaces, and remove deletes named headers. The same mechanism can set security headers such as x-frame-options. A client-supplied identification header is not a trustworthy security boundary merely because a proxy also adds one.</p><h3>Redirect HTTP to HTTPS</h3><p>For redirect-http-to-https in ns-demo, hostnames [*.contoso.io], change parentRefs.sectionName to http:</p><pre><code class="language-yaml">rules:
+- filters:
+  - type: RequestRedirect
+    requestRedirect:
+      scheme: https
+      statusCode: 301</code></pre><p>The Gateway returns a permanent redirect without forwarding to a backend. Configure and validate HTTPS first.</p><h3>Move an old domain</h3><p>For redirect-legacy-domain, hostname shop-old.contoso.io on https:</p><pre><code class="language-yaml">rules:
+- filters:
+  - type: RequestRedirect
+    requestRedirect:
+      hostname: shop.contoso.io
+      statusCode: 301</code></pre><p>The path is retained while the client moves to the new hostname. Both the old hostname's TLS certificate and listener match must work for an HTTPS redirect.</p><h3>Redirect API version /v1 to /v2</h3><p>For redirect-api-version, api.contoso.io:</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /v1}
+  filters:
+  - type: RequestRedirect
+    requestRedirect:
+      path: {type: ReplacePrefixMatch, replacePrefixMatch: /v2}
+      statusCode: 301
+- matches:
+  - path: {type: PathPrefix, value: /}
+  backendRefs:
+  - {name: api-backend, port: 8080}</code></pre><p>The client sees a changed URL. Use URLRewrite instead if the version translation must remain internal.</p><h3>Strip an API prefix without redirecting</h3><p>For rewrite-strip-api-prefix, api.contoso.io, /api/users becomes /users at api-backend:8080:</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /api}
+  filters:
+  - type: URLRewrite
+    urlRewrite:
+      path: {type: ReplacePrefixMatch, replacePrefixMatch: /}
+  backendRefs:
+  - {name: api-backend, port: 8080}</code></pre><h3>Route microservices and remove the version prefix</h3><p>For rewrite-microservice-routing, app.contoso.io:</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /v1/users}
+  filters:
+  - type: URLRewrite
+    urlRewrite:
+      path: {type: ReplacePrefixMatch, replacePrefixMatch: /users}
+  backendRefs:
+  - {name: users-service, port: 8080}
+- matches:
+  - path: {type: PathPrefix, value: /v1/orders}
+  filters:
+  - type: URLRewrite
+    urlRewrite:
+      path: {type: ReplacePrefixMatch, replacePrefixMatch: /orders}
+  backendRefs:
+  - {name: orders-service, port: 8080}</code></pre><h3>Rewrite the backend Host</h3><p>For rewrite-host-header in ns-demo, incoming legacy.contoso.io, preserve the external URL while sending a service-local Host:</p><pre><code class="language-yaml">rules:
+- filters:
+  - type: URLRewrite
+    urlRewrite:
+      hostname: legacy-app.ns-demo.svc.cluster.local
+  backendRefs:
+  - {name: legacy-app, port: 8080}</code></pre><p>This accommodates legacy backends requiring a specific Host. The service DNS name is an illustrative in-cluster name, not an exposed private hostname.</p><h3>Replace one complete health path</h3><p>For rewrite-health-endpoint, api.contoso.io, exact /healthz → /actuator/health:</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: Exact, value: /healthz}
+  filters:
+  - type: URLRewrite
+    urlRewrite:
+      path: {type: ReplaceFullPath, replaceFullPath: /actuator/health}
+  backendRefs:
+  - {name: api-backend, port: 8080}</code></pre><h3>Matching and filter rules</h3><ul><li>Exact path is more specific than PathPrefix; a longer prefix wins over a shorter one. Method/header/query matching adds specificity under Gateway API's precedence rules; ties and cross-route conflicts have additional standard rules, so YAML order is not the sole decision mechanism.</li><li>PathPrefix respects path-element boundaries, not arbitrary regex syntax. RegularExpression support is implementation-specific.</li><li>RequestRedirect changes what the client sees; URLRewrite changes the upstream request internally. Do not combine incompatible redirect/rewrite filters within one rule.</li><li>Hostname matching, listener sectionName, allowedRoutes, reference permissions and successful backend resolution must all align.</li><li>Response-status-based custom error pages and a global NGINX-style default backend are not supplied by these standard route examples. A catch-all path does not intercept backend errors.</li></ul><h2 id="limitations-and-bugs">21. Source-era support limits and managed-control-plane bug</h2><table><thead><tr><th>Area</th><th>Source status and planning consequence</th></tr></thead><tbody><tr><td>Istio mesh features</td><td>No sidecar injection, VirtualService, DestinationRule or EnvoyFilter in this ingress-only implementation; no simultaneous mesh add-on.</td></tr><tr><td>Egress management</td><td>Not supported by this Application Routing Gateway feature.</td></tr><tr><td>TLSRoute/SNI passthrough</td><td>Not supported in the GA source baseline; a future Istio 1.30 expectation was mentioned, not a deployment guarantee.</td></tr><tr><td>Cookie session affinity</td><td>Source May 2026: sessionPersistence was Experimental-only and absent from the installed Standard v1.3.0 schema; upstream Istio implementation issue remained open.</td></tr><tr><td>Upgrade model</td><td>Application Routing minor/patch updates are in-place; the mesh add-on uses revisioned minor-version canaries and in-place patches.</td></tr></tbody></table><p>For sticky sessions, the source recommends application-level state/cookie handling, shared state storage or another deliberately chosen supported architecture. Directly patching an unsupported sessionPersistence field is not a solution. The mesh's consistentHash DestinationRule cannot be borrowed into a configuration that forbids those CRDs. Future upstream implementation still needs release adoption and AKS rollout; no delivery date is supplied.</p><h3>istiod HPA CPU requests missing</h3><p>The source reports the managed istiod Deployment missing resources.requests.cpu, causing repeated FailedGetResourceMetric and FailedComputeMetricsReplicas events. Without a CPU request denominator the HPA cannot calculate utilization, so it remains at its minimum rather than scaling out. This is the control-plane HPA; the source's Gateway data-plane HPA worked normally.</p><pre><code class="language-bash">kubectl get hpa -n aks-istio-system
+kubectl describe hpa -n aks-istio-system "YOUR_ISTIOD_HPA_NAME"
+kubectl get deploy -n aks-istio-system -l app=istiod \
+  -o jsonpath='{.items[*].spec.template.spec.containers[*].resources}'</code></pre><p>The source says direct patches were reverted by the add-on reconciler and supplied no customer-side workaround. Open an Azure Support case with the exact build and evidence, track a managed fix, and distinguish known event noise from new failures. Normal data-plane scaling does not prove unlimited control-plane capacity.</p><h2 id="migration-cutover">22. Migration and operational acceptance checklist</h2><ol><li>Confirm CLI version, regional rollout, managed Standard CRDs, no conflicting mesh and an Accepted approuting-istio class.</li><li>Establish the NGINX baseline and retain it while testing a parallel Gateway. Do not reuse an in-use static LB IP or change DNS prematurely.</li><li>Review all conversion artifacts, mismatched classes, regex/rewrite behavior, timeouts and unsupported legacy annotations.</li><li>Verify one Gateway creates the expected Deployment, Service, HPA and PDB; choose private/public exposure and namespace topology deliberately.</li><li>Use the operator TLS path where available, or explicitly own manual CSI mounts, rotation and certificate grants. Test trust, SNI, expiry, rotation and a new handshake.</li><li>Validate NetworkPolicy on external-to-Gateway and Gateway-to-backend paths, client-IP preservation and every LB probe/port, including 443.</li><li>Test route precedence, headers, redirects, request sizes, long-running traffic, error handling, session state and disruption budgets.</li><li>Collect access logs and distinguish control-plane HPA issues from data-plane errors.</li><li>Plan DNS or fronting Application Gateway cutover with a reversal to the old backend. Preserve the original Host if routes depend on it, and avoid competing DNS reconcilers.</li><li>Retire the old ingress only after traffic and operational acceptance. The source refers to a separate migration guide that is absent from the inventoried repository; no missing detailed cutover script has been fabricated.</li></ol><h2 id="cleanup">23. Cleanup and retention cautions</h2><p>Run cleanup only for confirmed test resources, after checking the active cluster and namespace. Remove dependent routes and gateways before certificate infrastructure. The original manual cleanup incorrectly deletes a Pod after recommending a Deployment; the corrected resource kind is shown.</p><pre><code class="language-bash">kubectl delete -n "$APP_NS" gateway httpbin-gateway
+kubectl delete -n "$APP_NS" httproute httpbin
+kubectl delete -n "$APP_NS" deployment secrets-store-sync-httpbin
+kubectl delete -n "$APP_NS" secretproviderclass httpbin-credential-spc
+kubectl delete -n "$APP_NS" secret httpbin-credential
+kubectl delete -n "$APP_NS" -f https://raw.githubusercontent.com/istio/istio/release-1.27/samples/httpbin/httpbin.yaml
+
+# Only when no remaining Gateway workload needs the implementation:
+az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" --disable-app-routing-istio
+# Removing managed Gateway API CRDs affects every dependent Gateway/Route:
+# az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" --disable-gateway-api
+
+# Only for a disposable vault no longer used by any workload:
+# az keyvault delete --name "$AKV_NAME" --resource-group "$RESOURCE_GROUP"
+# az keyvault purge --name "$AKV_NAME" --location "$LOCATION"</code></pre><p>Purge protection prevents permanent deletion before retention expires; do not disable safeguards or assume purge succeeds immediately. Operator-created resources and UAMI/FIC/role assignments should be reviewed against remaining consumers rather than deleted indiscriminately. The operator update does not supply a complete identity cleanup recipe.</p><h2 id="references">References and publication boundary</h2><ul><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing-gateway-api">Application Routing Gateway API</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/managed-gateway-api">Managed Gateway API installation</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/istio-gateway-api#configmap-customizations">Gateway customization allowlist</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/istio-gateway-api#annotation-customizations">Annotation customization</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing-gateway-api-dns-tls#configure-tls-termination-on-a-gateway">Current operator DNS/TLS integration documentation</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing-gateway-api-tls">Historical TLS documentation link</a></li><li><a href="https://learn.microsoft.com/en-us/troubleshoot/azure/azure-kubernetes/create-upgrade-delete/error-code-poddrainfailure">PDB drain failure troubleshooting</a></li><li><a href="https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage#config-access-log-format-response-flags">Envoy response flags</a></li><li><a href="https://github.com/Azure/AKS/issues/5728">Public access-log issue</a></li><li><a href="https://github.com/istio/istio/issues/55839">Upstream session persistence issue</a></li><li><a href="https://github.com/Azure/AKS/issues/5312">Historical CSI synchronization issue</a></li><li><a href="https://cert-manager.io/docs/usage/gateway/">cert-manager Gateway usage</a></li></ul><p>This article preserves the source's measured observations, limitations and incomplete investigations while labeling outdated claims and unsafe assumptions. Public references are retained for verification; no private repository links, screenshots, credential values or original environment mappings are published.</p><h2 id="resources">Resources</h2><p>Source-derived, parameterized resources. Review every placeholder, permission, dependency, and deployment effect before use. These files are not a one-click deployment.</p><ul class="download-list"><li><a download href="../downloads/istio-gateway-api/current_env/converted-gateway.yaml">current_env/converted-gateway.yaml</a><p>Sanitized historical ingress2gateway 0.5.0 output; requires class, infrastructure and feature review.</p></li><li><a download href="../downloads/istio-gateway-api/current_env/gwapi.yaml">current_env/gwapi.yaml</a><p>Sanitized historical ingress2gateway 1.0.0 output retaining regex, full-path rewrite and timeout limitations.</p></li><li><a download href="../downloads/istio-gateway-api/current_env/internal-ingress.yaml">current_env/internal-ingress.yaml</a><p>Legacy NGINX annotation inventory with explicit controller-class and TLS configuration warnings.</p></li><li><a download href="../downloads/istio-gateway-api/current_env/internal-nginx-controller.yaml">current_env/internal-nginx-controller.yaml</a><p>Application Routing NGINX controller using an internal Azure LoadBalancer.</p></li><li><a download href="../downloads/istio-gateway-api/current_env/sample-app.yaml">current_env/sample-app.yaml</a><p>Echo application namespace, two-replica Deployment and port-80 Service.</p></li><li><a download href="../downloads/istio-gateway-api/tobe_env/gateway.yaml">tobe_env/gateway.yaml</a><p>Sanitized target HTTP-only approuting-istio Gateway and echo route; not full NGINX feature parity.</p></li></ul><h2 id="editorial-notes">Editorial notes</h2><p>This page consolidates the following source documents into an English technical guide:</p><ul><li>HTTPRoute Configuration Guide for Application Routing Gateway API</li><li>Application Routing Gateway API GA Deployment Guide</li><li>Application Routing Gateway API: Operator-Managed Azure Key Vault TLS Integration</li><li>Application Routing Gateway API: Manual Azure Key Vault TLS Integration</li><li>Configuring an Internal NGINX Ingress with Application Routing</li><li>Conversion Output from ingress2gateway 0.5.0</li><li>Conversion Output from ingress2gateway 1.0.0</li><li>Legacy NGINX Ingress Annotation Inventory</li><li>Internal NGINX Controller Manifest</li><li>Echo Sample Application Manifest</li><li>Target Istio Gateway and HTTPRoute Manifest</li></ul><ul><li>Repeated setup and TLS material is consolidated; the operator revision is clearly preferred and the earlier manual chain remains documented as a fallback.</li><li>Observed cloud identifiers, private hostnames, node/Pod names, network addresses and request IDs are removed or replaced without publishing an original-value mapping.</li><li>The referenced standalone migration guide is absent from the repository inventory; no contents or files are invented.</li><li>The masked/broken PFX command is not reconstructed; safe explicit export/import operations are described with an input password variable.</li><li>The reported empty health-probe annotations are preserved only as a historical reproduction, not a validated deployment fix; port 443 and product-fix ETA remain unresolved.</li><li>Common HTTPRoute envelopes and repeated certificate object patterns are consolidated into labeled fragments with all substantive rule behavior retained.</li></ul><p>No original credentials or private repository links are included. Do not put populated configuration files or copied production outputs back into this public site.</p></div>
+</article></main>
+<footer><span>Azure Tech Field Notes</span><span>Independent technical notes. Not an official Microsoft publication.</span><span>English edition &middot; September 2026</span></footer>
+<div class="sr-only" id="status" role="status" aria-live="polite"></div>
+</body></html>

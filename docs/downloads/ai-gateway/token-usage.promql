@@ -1,0 +1,6 @@
+# Source-derived metric query; replace the resource ID components.
+# Run against YOUR_PROMETHEUS_QUERY_ENDPOINT, not Log Analytics.
+# Counts are estimates and are not a financial billing ledger.
+increase({__name__="azure.ai_gateway.client.token.usage",
+          microsoft.appresourceid="/subscriptions/YOUR_SUBSCRIPTION_ID/resourceGroups/YOUR_RESOURCE_GROUP/providers/microsoft.insights/components/YOUR_APPLICATION_INSIGHTS_NAME",
+          azure.ai_gateway.workspace="default"}[7200s])

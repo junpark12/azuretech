@@ -1,0 +1,40 @@
+# Historical ingress2gateway 0.5.0 output; class nginx is intentionally retained.
+# Review class, infrastructure, TLS and policy before migration.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  annotations:
+    gateway.networking.k8s.io/generator: ingress2gateway-0.5.0
+  name: nginx
+  namespace: demo
+spec:
+  gatewayClassName: nginx
+  listeners:
+  - hostname: echo.example.com
+    name: echo-example-com-http
+    port: 80
+    protocol: HTTP
+status: {}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  annotations:
+    gateway.networking.k8s.io/generator: ingress2gateway-0.5.0
+  name: echo-ingress-echo-example-com
+  namespace: demo
+spec:
+  hostnames:
+  - echo.example.com
+  parentRefs:
+  - name: nginx
+  rules:
+  - backendRefs:
+    - name: echo
+      port: 80
+    matches:
+    - path:
+        type: PathPrefix
+        value: /
+status:
+  parents: []

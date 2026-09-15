@@ -1,0 +1,22 @@
+# Source-derived template. Replace every YOUR_* value before manual use.
+# Set APIM_SUBSCRIPTION_KEY in the VS Code extension host environment.
+# This request permits 10,000 completion tokens with high reasoning effort.
+# Review cost before execution; a 429 can trigger one additional APIM attempt.
+@apimBaseUrl = https://YOUR_APIM_HOST
+@deployment = YOUR_DEPLOYMENT_NAME
+
+### Legacy Chat: one non-streaming request
+# Backend policy pins api-version to 2024-10-21.
+# @name legacyChatCompletions
+POST {{apimBaseUrl}}/openai/deployments/{{deployment}}/chat/completions?api-version=2024-10-21
+Content-Type: application/json
+Accept: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "messages": [{"role": "user", "content": "Tell me a funny story."}],
+  "max_completion_tokens": 10000,
+  "reasoning_effort": "high",
+  "stream": false,
+  "store": false
+}

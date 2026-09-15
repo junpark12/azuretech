@@ -1,0 +1,88 @@
+{
+  "properties": {
+    "loggerId": "/subscriptions/YOUR_SUBSCRIPTION_ID/resourceGroups/YOUR_APIM_RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/YOUR_APIM_NAME/loggers/YOUR_LOGGER_ID",
+    "alwaysLog": "allErrors",
+    "sampling": {"samplingType": "fixed", "percentage": 100},
+    "verbosity": "information",
+    "logClientIp": false,
+    "httpCorrelationProtocol": "W3C",
+    "operationNameFormat": "Name",
+    "metrics": false,
+    "frontend": {
+      "request": {
+        "body": {"bytes": 0},
+        "headers": [],
+        "dataMasking": {
+          "headers": [
+            {"value": "Authorization", "mode": "Mask"},
+            {"value": "api-key", "mode": "Mask"},
+            {"value": "Ocp-Apim-Subscription-Key", "mode": "Mask"},
+            {"value": "Cookie", "mode": "Mask"},
+            {"value": "Set-Cookie", "mode": "Mask"}
+          ],
+          "queryParams": [
+            {"value": "subscription-key", "mode": "Hide"},
+            {"value": "api-key", "mode": "Hide"},
+            {"value": "access_token", "mode": "Hide"}
+          ]
+        }
+      },
+      "response": {
+        "body": {"bytes": 0},
+        "headers": [],
+        "dataMasking": {
+          "headers": [
+            {"value": "Authorization", "mode": "Mask"},
+            {"value": "api-key", "mode": "Mask"},
+            {"value": "Ocp-Apim-Subscription-Key", "mode": "Mask"},
+            {"value": "Cookie", "mode": "Mask"},
+            {"value": "Set-Cookie", "mode": "Mask"}
+          ],
+          "queryParams": [
+            {"value": "subscription-key", "mode": "Hide"},
+            {"value": "api-key", "mode": "Hide"},
+            {"value": "access_token", "mode": "Hide"}
+          ]
+        }
+      }
+    },
+    "backend": {
+      "request": {
+        "body": {"bytes": 0},
+        "headers": [],
+        "dataMasking": {
+          "headers": [
+            {"value": "Authorization", "mode": "Mask"},
+            {"value": "api-key", "mode": "Mask"},
+            {"value": "Ocp-Apim-Subscription-Key", "mode": "Mask"},
+            {"value": "Cookie", "mode": "Mask"},
+            {"value": "Set-Cookie", "mode": "Mask"}
+          ],
+          "queryParams": [
+            {"value": "subscription-key", "mode": "Hide"},
+            {"value": "api-key", "mode": "Hide"},
+            {"value": "access_token", "mode": "Hide"}
+          ]
+        }
+      },
+      "response": {
+        "body": {"bytes": 0},
+        "headers": [],
+        "dataMasking": {
+          "headers": [
+            {"value": "Authorization", "mode": "Mask"},
+            {"value": "api-key", "mode": "Mask"},
+            {"value": "Ocp-Apim-Subscription-Key", "mode": "Mask"},
+            {"value": "Cookie", "mode": "Mask"},
+            {"value": "Set-Cookie", "mode": "Mask"}
+          ],
+          "queryParams": [
+            {"value": "subscription-key", "mode": "Hide"},
+            {"value": "api-key", "mode": "Hide"},
+            {"value": "access_token", "mode": "Hide"}
+          ]
+        }
+      }
+    }
+  }
+}

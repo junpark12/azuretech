@@ -1,0 +1,48 @@
+# Historical ingress2gateway 1.0.0 output, not a production migration result.
+# RegularExpression support is implementation-specific; 20m0s is not the source 120s timeout.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  annotations:
+    gateway.networking.k8s.io/generator: ingress2gateway-1.0.0
+  name: nginx
+  namespace: demo
+spec:
+  gatewayClassName: nginx
+  listeners:
+  - hostname: echo.example.com
+    name: echo-example-com-http
+    port: 80
+    protocol: HTTP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  annotations:
+    gateway.networking.k8s.io/generator: ingress2gateway-1.0.0
+  name: echo-ingress-echo-example-com
+  namespace: demo
+spec:
+  hostnames:
+  - echo.example.com
+  parentRefs:
+  - name: nginx
+  rules:
+  - backendRefs:
+    - name: echo
+      port: 80
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          replaceFullPath: /
+          type: ReplaceFullPath
+    matches:
+    - path:
+        type: RegularExpression
+        value: (?i)/.*
+    name: rule-0
+    timeouts:
+      request: 20m0s
+status:
+  parents: []

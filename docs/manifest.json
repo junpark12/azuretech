@@ -1,0 +1,103 @@
+{
+    "edition":  "2026-09",
+    "topicCount":  10,
+    "topics":  [
+                   {
+                       "sourceDocumentCount":  1,
+                       "title":  "Azure AI Gateway Tier: Preview Setup, Policies, MCP, and Token Monitoring",
+                       "category":  "AI",
+                       "resourceCount":  4,
+                       "slug":  "ai-gateway"
+                   },
+                   {
+                       "sourceDocumentCount":  5,
+                       "title":  "Codex on Azure: Foundry setup, APIM routing, streaming failures, and capacity design",
+                       "category":  "AI",
+                       "resourceCount":  0,
+                       "slug":  "codex"
+                   },
+                   {
+                       "sourceDocumentCount":  4,
+                       "title":  "Existing APIM as a Foundry AI Gateway: Backend Pools, Managed Identity, Retry, and Monitoring",
+                       "category":  "AI",
+                       "resourceCount":  15,
+                       "slug":  "ai-gateway-existing"
+                   },
+                   {
+                       "sourceDocumentCount":  1,
+                       "title":  "Translation latency across six GPT models: an April 2026 Azure benchmark",
+                       "category":  "AI",
+                       "resourceCount":  0,
+                       "slug":  "translation-performance"
+                   },
+                   {
+                       "sourceDocumentCount":  11,
+                       "title":  "AKS Application Routing Gateway API: Migration, Routing, and Key Vault TLS",
+                       "category":  "AKS",
+                       "resourceCount":  6,
+                       "slug":  "istio-gateway-api"
+                   },
+                   {
+                       "sourceDocumentCount":  1,
+                       "title":  "Artifact Streaming on AKS: Configure, Benchmark, and Roll Back",
+                       "category":  "AKS",
+                       "resourceCount":  0,
+                       "slug":  "acr-streaming"
+                   },
+                   {
+                       "sourceDocumentCount":  1,
+                       "title":  "Migrating AKS from No Network Policy to Cilium",
+                       "category":  "AKS",
+                       "resourceCount":  0,
+                       "slug":  "cilium-network-policy"
+                   },
+                   {
+                       "sourceDocumentCount":  2,
+                       "title":  "Self-Managed Envoy Gateway on AKS and NGINX Migration",
+                       "category":  "AKS",
+                       "resourceCount":  0,
+                       "slug":  "envoy-gateway"
+                   },
+                   {
+                       "sourceDocumentCount":  1,
+                       "title":  "ASE v3 Front-end Scaling: Signals, Timing, and Cost",
+                       "category":  "App Service",
+                       "resourceCount":  0,
+                       "slug":  "ase-frontend-scaling"
+                   },
+                   {
+                       "sourceDocumentCount":  2,
+                       "title":  "Managed Instance on App Service: Capabilities and PoC",
+                       "category":  "App Service",
+                       "resourceCount":  0,
+                       "slug":  "managed-instance"
+                   }
+               ],
+    "resources":  [
+                      "downloads/ai-gateway/gateway-requests.http",
+                      "downloads/ai-gateway/resource-commands.sh",
+                      "downloads/ai-gateway/responses-agent.py",
+                      "downloads/ai-gateway/token-usage.promql",
+                      "downloads/ai-gateway-existing/chat.xml",
+                      "downloads/ai-gateway-existing/diagnostic.json",
+                      "downloads/ai-gateway-existing/legacy-chat.xml",
+                      "downloads/ai-gateway-existing/legacytest.http",
+                      "downloads/ai-gateway-existing/logger.json",
+                      "downloads/ai-gateway-existing/monitoring.kql",
+                      "downloads/ai-gateway-existing/pool.json",
+                      "downloads/ai-gateway-existing/responses.xml",
+                      "downloads/ai-gateway-existing/responsetest.http",
+                      "downloads/ai-gateway-existing/responsetest2.http",
+                      "downloads/ai-gateway-existing/single-backends.json",
+                      "downloads/ai-gateway-existing/test_gateway.py",
+                      "downloads/ai-gateway-existing/test_legacy_usage.py",
+                      "downloads/ai-gateway-existing/test_monitoring.py",
+                      "downloads/ai-gateway-existing/v1test.http",
+                      "downloads/istio-gateway-api/current_env/converted-gateway.yaml",
+                      "downloads/istio-gateway-api/current_env/gwapi.yaml",
+                      "downloads/istio-gateway-api/current_env/internal-ingress.yaml",
+                      "downloads/istio-gateway-api/current_env/internal-nginx-controller.yaml",
+                      "downloads/istio-gateway-api/current_env/sample-app.yaml",
+                      "downloads/istio-gateway-api/tobe_env/gateway.yaml"
+                  ]
+}

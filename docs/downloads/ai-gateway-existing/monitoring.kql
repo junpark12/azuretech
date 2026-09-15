@@ -1,0 +1,89 @@
+// Source-derived queries. Execute each query separately in the indicated scope.
+// Application Insights: latest requests.
+requests
+| where timestamp > ago(1h)
+| project timestamp, operation_Id, name, resultCode, success, duration
+| order by timestamp desc
+| take 50
+
+// Application Insights: backend dependencies (raw rows, not sampling-adjusted).
+dependencies
+| where timestamp > ago(1h)
+| where target endswith ".openai.azure.com"
+| summarize Calls=count(), Errors=countif(success == false),
+            P50Duration=percentile(duration, 50) by target, resultCode
+
+// Application Insights: backend attempts.
+traces
+| where timestamp > ago(1h)
+| where message has "backend-attempt"
+| extend RequestId=tostring(customDimensions.requestId),
+         Attempt=toint(customDimensions.attempt),
+         BackendHost=tostring(customDimensions.backendHost),
+         Status=toint(customDimensions.status),
+         ElapsedMs=todouble(customDimensions.elapsedMs),
+         RetryAfter=tostring(customDimensions.retryAfter),
+         RetryAfterMs=tostring(customDimensions.retryAfterMs)
+| project timestamp, operation_Id, RequestId, Attempt,
+          BackendHost, Status, ElapsedMs, RetryAfter, RetryAfterMs
+| order by timestamp asc
+
+// Log Analytics workspace: equivalent backend-attempt query.
+AppTraces
+| where TimeGenerated > ago(1h)
+| where Message has "backend-attempt"
+| extend RequestId=tostring(Properties.requestId),
+         Attempt=toint(Properties.attempt),
+         BackendHost=tostring(Properties.backendHost),
+         Status=toint(Properties.status),
+         ElapsedMs=todouble(Properties.elapsedMs),
+         RetryAfter=tostring(Properties.retryAfter),
+         RetryAfterMs=tostring(Properties.retryAfterMs)
+| project TimeGenerated, OperationId, RequestId, Attempt,
+          BackendHost, Status, ElapsedMs, RetryAfter, RetryAfterMs
+| order by TimeGenerated asc
+
+// Application Insights: individual successful Legacy JSON responses only.
+traces
+| where timestamp > ago(1h)
+| where message has "llm-usage"
+| extend Usage=parse_json(tostring(customDimensions.usage))
+| project timestamp,
+          RequestId=tostring(customDimensions.requestId),
+          SubscriptionId=tostring(customDimensions.subscriptionId),
+          BackendHost=tostring(customDimensions.backendHost),
+          Attempt=toint(customDimensions.attempt),
+          Model=tostring(Usage.model),
+          UsageStatus=tostring(Usage.usageStatus),
+          InputTokens=tolong(Usage.inputTokens),
+          OutputTokens=tolong(Usage.outputTokens),
+          TotalTokens=tolong(Usage.totalTokens)
+| order by timestamp desc
+| take 100
+
+// Application Insights: subscription x backend x model totals, not a billing ledger.
+traces
+| where timestamp > ago(24h)
+| where message has "llm-usage"
+| extend Usage=parse_json(tostring(customDimensions.usage)),
+         SubscriptionId=tostring(customDimensions.subscriptionId),
+         BackendHost=tostring(customDimensions.backendHost)
+| where tostring(Usage.usageStatus) == "reported"
+| extend Model=tostring(Usage.model),
+         InputTokens=tolong(Usage.inputTokens),
+         OutputTokens=tolong(Usage.outputTokens),
+         TotalTokens=tolong(Usage.totalTokens)
+| summarize RecordedResponses=count(), InputTokens=sum(InputTokens),
+            OutputTokens=sum(OutputTokens), TotalTokens=sum(TotalTokens)
+  by SubscriptionId, BackendHost, Model
+| order by TotalTokens desc
+
+// Missing usage is unknown, never zero.
+traces
+| where timestamp > ago(24h)
+| where message has "llm-usage"
+| extend Usage=parse_json(tostring(customDimensions.usage))
+| where tostring(Usage.usageStatus) == "not-reported"
+| summarize NotReportedResponses=count()
+  by SubscriptionId=tostring(customDimensions.subscriptionId),
+     BackendHost=tostring(customDimensions.backendHost)

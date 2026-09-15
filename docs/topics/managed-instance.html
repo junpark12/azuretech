@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<title>Managed Instance on App Service: Capabilities and PoC | Azure Tech Field Notes</title>
+<meta name="description" content="Explore plan-scoped Windows customization, app-scoped private endpoints, Bastion diagnostics, and the limitations observed during a preview PoC.">
+<link rel="stylesheet" href="../assets/site.css">
+<script src="../assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header"><a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">AT</span><span>Azure Tech<span class="brand-subtitle">FIELD NOTES</span></span></a><nav aria-label="Site"><a href="../index.html">All topics</a><button id="theme-toggle" type="button" aria-label="Switch color theme">Switch theme</button></nav></header>
+<main id="main" class="topic-layout">
+<aside class="toc"><details open><summary>On this page</summary><ol><li><a href="#scope">Preview context and scope</a></li><li><a href="#positioning">Where Managed Instance fits</a></li><li><a href="#features">Capabilities and operational responsibilities</a></li><li><a href="#prerequisites">PoC prerequisites and variables</a></li><li><a href="#create-plan">Create and identify the plan</a></li><li><a href="#network">Separate private-endpoint and integration subnets</a></li><li><a href="#private-endpoints">Validate app-scoped private endpoints</a></li><li><a href="#bastion">Plan-level integration and Bastion RDP</a></li><li><a href="#storage-mount">Azure Files mount: separate UI support from authentication support</a></li><li><a href="#scale-installation">Scale and installation-script validation</a></li><li><a href="#operations">Production-readiness and cleanup</a></li><li><a href="#resources">Resources</a></li><li><a href="#editorial-notes">Editorial notes</a></li></ol></details><a class="back-link" href="../index.html">&#8592; All topics</a></aside>
+<article class="article"><header class="article-header"><p class="eyebrow">App Service / FIELD NOTE</p><h1>Managed Instance on App Service: Capabilities and PoC</h1><p class="lead">Explore plan-scoped Windows customization, app-scoped private endpoints, Bastion diagnostics, and the limitations observed during a preview PoC.</p><div class="article-meta"><span>English edition</span><span>Parameterized examples</span><span>September 2026</span></div></header>
+<aside class="editorial-note"><strong>Environment-specific evidence.</strong> Measurements and preview behavior reflect the source investigation. They are not current service guarantees. All configuration values must be supplied for your own environment.</aside>
+<div class="article-body"><h2 id="scope">Preview context and scope</h2>
+<p>This article combines a feature comparison dated June 10, 2026 with a subsequent proof-of-concept report for <strong>Managed Instance on Azure App Service</strong>. It concerns Windows application hosting, not Azure SQL Managed Instance. Preview availability, APIs, limits, and portal screens can change: confirm the current <a href="https://learn.microsoft.com/en-us/azure/app-service/overview-managed-instance">product overview</a> before deployment.</p>
+<blockquote>The feature overview initially left private-endpoint scope and maximum scale unresolved. The later PoC observed app-scoped private endpoints and a maximum of 30 workers for its P1v4 plan. These results clarify that experiment; they do not establish an immutable limit for every region, SKU, or future release.</blockquote>
+<table><thead><tr><th>Question</th><th>PoC result</th></tr></thead><tbody>
+<tr><td>Private endpoints: app or plan?</td><td>Per app (<code>Microsoft.Web/sites</code>), using group ID <code>sites</code>.</td></tr>
+<tr><td>Azure Files mapped to F:?</td><td>The UI allowed a custom drive letter, but the tested mount flow required a Key Vault secret containing key-based storage credentials. A mount was not completed in the key-disabled environment.</td></tr>
+<tr><td>RDP?</td><td>JIT access through Azure Bastion; the portal connection supplied temporary credentials.</td></tr>
+<tr><td>Horizontal scale?</td><td>The tested P1v4 plan reported <code>maximumNumberOfWorkers: 30</code>.</td></tr>
+<tr><td>Installation-script OS/IIS changes?</td><td>Not completed. Worker access and IIS Manager were confirmed; script execution and persistence still needed validation.</td></tr>
+</tbody></table>
+
+<h2 id="positioning">Where Managed Instance fits</h2>
+<table><thead><tr><th>Area</th><th>Multitenant App Service</th><th>Managed Instance</th><th>ASE v3</th></tr></thead><tbody>
+<tr><td>Boundary</td><td>Dedicated workers with shared supporting infrastructure</td><td>App Service Plan-scoped boundary</td><td>A dedicated environment containing multiple plans</td></tr>
+<tr><td>Windows customization</td><td>Restricted platform environment</td><td>Supported PowerShell installation scripts within platform limits</td><td>Not a general-purpose Windows VM; application/container strategies may be needed</td></tr>
+<tr><td>Interactive worker diagnostics</td><td>No comparable RDP workflow</td><td>JIT RDP through Bastion</td><td>No comparable RDP workflow</td></tr>
+<tr><td>Typical fit</td><td>Cloud-native applications without OS-level dependencies</td><td>Legacy Windows web applications needing customization</td><td>Dedicated environment and larger-scale isolation requirements</td></tr>
+</tbody></table>
+<p>A Managed Instance is the plan itself; it is not an environment that contains several plans. Multiple applications can share it, but another independently scoped plan requires another Managed Instance. The source comparison cited ASE v3 limits of 100 workers per plan and 200 per environment; consult current limits rather than sizing from this historical comparison alone.</p>
+<p>Do not equate Managed Instance with ASE. In particular, the PoC's plan-level outbound VNet integration did not turn inbound private endpoints into a shared plan endpoint.</p>
+
+<h2 id="features">Capabilities and operational responsibilities</h2>
+<h3>Custom components and persistent configuration</h3>
+<p>The source overview identifies installation-script use cases including COM components, registry settings, IIS configuration and ACLs, MSI installers, GAC assemblies, custom runtimes, supported Windows features, and third-party components. This is a compatibility option for supported legacy Windows workloads, not permission for arbitrary OS changes.</p>
+<p>Package PowerShell installation scripts as a ZIP in Azure Storage and configure managed-identity access. Startup execution reapplies the configuration on replacement or scale-out instances. Make scripts repeatable and test their startup and failure behavior. Manual RDP changes are temporary and are not a deployment mechanism.</p>
+<p>Installation logs were described at <code>C:\InstallScripts\&lt;SCRIPT_NAME&gt;\Install.log</code>, with console/platform log integration. Registry adapters can separate sensitive registry values into Key Vault-backed configuration. Never embed secrets in installation scripts or source control.</p>
+<h3>Networking, identity, and storage</h3>
+<p>Plan-level VNet integration can be added after creation, subject to the supported configuration. The source discusses NSGs, NAT Gateway, routing, and private DNS. The PoC established that incoming private endpoints still target individual applications. Treat inbound access, outbound routing, name resolution, and Bastion access as distinct concerns.</p>
+<p>The feature comparison describes plan-level managed identities and Key Vault integration. That does not imply every storage mount operation supports identity-based authentication. The later PoC specifically could not complete the portal Azure Files mount in its key-disabled environment.</p>
+<p>UNC/network-share access, drive mapping, and temporary local storage were identified as compatibility features. Temporary storage is not durable application storage. The source cited a 2 GB temporary-storage figure; validate current SKU-specific behavior.</p>
+<h3>Who patches what?</h3>
+<table><thead><tr><th>Responsibility</th><th>Owner</th></tr></thead><tbody>
+<tr><td>Platform Windows patches, host maintenance, load balancing, and platform-provided runtime servicing</td><td>Platform, within its supported lifecycle</td></tr>
+<tr><td>Custom frameworks, runtimes, and components installed by the customer</td><td>Customer</td></tr>
+<tr><td>Application code, dependencies, installation scripts, scale rules, and SKU selection</td><td>Customer</td></tr>
+<tr><td>Executing configured scaling operations</td><td>Platform</td></tr>
+</tbody></table>
+<p>The preview overview reviewed in the source did not establish ASE-style maintenance-window or upgrade-preference controls for Managed Instance. Do not assume those controls exist simply because the service has an isolation boundary.</p>
+<h3>Standard application operations</h3>
+<p>The source describes TLS, custom-domain bindings, App Service Authentication with Microsoft Entra ID, and familiar deployment approaches such as GitHub Actions, Azure DevOps, ZIP/package deployment, and run-from-package. These are not unique differentiators of Managed Instance. The differentiators discussed are supported Windows customization and Bastion-based diagnostics.</p>
+<p>The source listed .NET Framework 3.5/4.8 and .NET 8 as preinstalled runtimes at the time. Confirm runtime support and lifecycle before choosing a target. Plan-level installation, registry-adapter, and mount events should be included in the logging design; validate Log Stream and Azure Monitor integration early.</p>
+
+<h2 id="prerequisites">PoC prerequisites and variables</h2>
+<p>The source preview scope was Windows web apps on Pv4/Pmv4 SKUs, outside ASE. It listed East Asia, West Central US, North Europe, East US, Australia East, Central India, and South India as supported regions at that time. Domain join, NTLM/Kerberos, Linux/container workloads, WebJobs, and TCP/NetPipes were reported as unsupported in the reviewed scope. Recheck current documentation rather than treating the list as evergreen.</p>
+<p>The PoC used two apps, a user-assigned identity, a storage account/share, separate private-endpoint and app-integration subnets, and a Standard Bastion deployment. The commands below are source-derived examples, not a complete automatic deployment. Review cost and permissions first. Choose a dedicated PoC resource group and unused, non-overlapping address ranges.</p>
+<pre><code class="language-bash">: "${SUBSCRIPTION_ID:?Set SUBSCRIPTION_ID}"
+: "${RESOURCE_GROUP:?Set RESOURCE_GROUP}"
+: "${LOCATION:?Set a currently supported region}"
+: "${PLAN_NAME:?Set PLAN_NAME}"
+: "${IDENTITY_NAME:?Set IDENTITY_NAME}"
+: "${APP_ONE:?Set a globally unique APP_ONE}"
+: "${APP_TWO:?Set a globally unique APP_TWO}"
+: "${VNET_NAME:?Set VNET_NAME}"
+: "${VNET_CIDR:?Set VNET_CIDR}"
+: "${PE_SUBNET_NAME:?Set PE_SUBNET_NAME}"
+: "${PE_SUBNET_CIDR:?Set PE_SUBNET_CIDR}"
+: "${APP_SUBNET_NAME:?Set APP_SUBNET_NAME}"
+: "${APP_SUBNET_CIDR:?Set APP_SUBNET_CIDR}"
+: "${BASTION_SUBNET_CIDR:?Set a non-overlapping /26 or larger subnet}"
+
+az account set --subscription "$SUBSCRIPTION_ID"
+az group create -n "$RESOURCE_GROUP" -l "$LOCATION"
+az identity create -g "$RESOURCE_GROUP" -n "$IDENTITY_NAME" -l "$LOCATION"
+IDENTITY_ID=$(az identity show -g "$RESOURCE_GROUP" -n "$IDENTITY_NAME" --query id -o tsv)</code></pre>
+
+<h2 id="create-plan">Create and identify the plan</h2>
+<p>The source first created a Windows Premium v4 plan, then configured preview-specific properties through REST. Preview CLI availability and schema can change; verify the supported creation flow before using this sequence. The important discriminator observed was the plan property <code>isCustomMode: true</code>, not <code>hyperV</code> or <code>isXenon</code>.</p>
+<pre><code class="language-bash"># Windows is the default; do not add --is-linux for this Windows plan.
+az appservice plan create -g "$RESOURCE_GROUP" -n "$PLAN_NAME" \
+  -l "$LOCATION" --sku P1V4
+PLAN_ID=$(az appservice plan show -g "$RESOURCE_GROUP" -n "$PLAN_NAME" --query id -o tsv)
+
+az rest --method patch \
+  --url "https://management.azure.com${PLAN_ID}?api-version=2024-11-01" \
+  --body "{\"properties\":{\"isCustomMode\":true,\"planDefaultIdentity\":{\"identityType\":\"UserAssigned\",\"userAssignedIdentityResourceId\":\"$IDENTITY_ID\"}}}"
+
+az resource show -g "$RESOURCE_GROUP" \
+  --resource-type "Microsoft.Web/serverfarms" -n "$PLAN_NAME" \
+  --query "{isCustomMode:properties.isCustomMode,tier:sku.tier,size:sku.size,maxWorkers:properties.maximumNumberOfWorkers}" -o json
+
+az webapp create -g "$RESOURCE_GROUP" -p "$PLAN_NAME" -n "$APP_ONE"
+az webapp create -g "$RESOURCE_GROUP" -p "$PLAN_NAME" -n "$APP_TWO"
+az appservice plan show -g "$RESOURCE_GROUP" -n "$PLAN_NAME" \
+  --query "{numberOfSites:numberOfSites,isCustomMode:isCustomMode}" -o json</code></pre>
+<p>The source's expected result was <code>isCustomMode: true</code>, tier <code>PremiumV4</code>, size <code>P1v4</code>, and 30 maximum workers. Verify the actual response rather than assuming that a successful plan-create command enabled the feature.</p>
+
+<h2 id="network">Separate private-endpoint and integration subnets</h2>
+<pre><code class="language-bash">az network vnet create -g "$RESOURCE_GROUP" -n "$VNET_NAME" -l "$LOCATION" \
+  --address-prefixes "$VNET_CIDR" \
+  --subnet-name "$PE_SUBNET_NAME" --subnet-prefixes "$PE_SUBNET_CIDR"
+
+az network vnet subnet create -g "$RESOURCE_GROUP" --vnet-name "$VNET_NAME" \
+  -n "$APP_SUBNET_NAME" --address-prefixes "$APP_SUBNET_CIDR" \
+  --delegations Microsoft.Web/serverFarms
+
+az network vnet subnet create -g "$RESOURCE_GROUP" --vnet-name "$VNET_NAME" \
+  -n AzureBastionSubnet --address-prefixes "$BASTION_SUBNET_CIDR"
+
+az network vnet subnet update -g "$RESOURCE_GROUP" --vnet-name "$VNET_NAME" \
+  -n "$PE_SUBNET_NAME" --private-endpoint-network-policies Disabled</code></pre>
+<p><code>AzureBastionSubnet</code> is a required service subnet name, not an environment identifier. The source disabled private-endpoint subnet network policies for its setup. Apply your current supported private-endpoint/NSG design rather than assuming all environments require the same policy setting.</p>
+
+<h2 id="private-endpoints">Validate app-scoped private endpoints</h2>
+<pre><code class="language-bash">APP_ONE_ID=$(az webapp show -g "$RESOURCE_GROUP" -n "$APP_ONE" --query id -o tsv)
+APP_TWO_ID=$(az webapp show -g "$RESOURCE_GROUP" -n "$APP_TWO" --query id -o tsv)
+az network private-link-resource list --id "$APP_ONE_ID" \
+  --query "[].{name:name,groupId:properties.groupId}" -o json
+
+: "${PE_ONE:?Set PE_ONE}"
+: "${PE_TWO:?Set PE_TWO}"
+az network private-endpoint create -g "$RESOURCE_GROUP" -n "$PE_ONE" -l "$LOCATION" \
+  --vnet-name "$VNET_NAME" --subnet "$PE_SUBNET_NAME" \
+  --private-connection-resource-id "$APP_ONE_ID" \
+  --group-id sites --connection-name "${PE_ONE}-connection"
+az network private-endpoint create -g "$RESOURCE_GROUP" -n "$PE_TWO" -l "$LOCATION" \
+  --vnet-name "$VNET_NAME" --subnet "$PE_SUBNET_NAME" \
+  --private-connection-resource-id "$APP_TWO_ID" \
+  --group-id sites --connection-name "${PE_TWO}-connection"
+
+az network private-endpoint list -g "$RESOURCE_GROUP" \
+  --query "[].{name:name,groupId:privateLinkServiceConnections[0].groupIds[0],target:privateLinkServiceConnections[0].privateLinkServiceId}" -o json</code></pre>
+<p>Each target in the PoC was an individual <code>Microsoft.Web/sites</code> resource, not a server farm. Two apps had two endpoints with distinct private IPs. The report observed different public-network-access states between its apps; explicitly inspect and configure public access rather than relying on an assumed automatic toggle. Complete private DNS and connectivity validation separately; endpoint creation alone is not an end-to-end private-access test.</p>
+
+<h2 id="bastion">Plan-level integration and Bastion RDP</h2>
+<p>In the observed preview, app-level VNet integration failed with a message directing the user to update the server farm's <code>VirtualNetworkSubnetId</code>. Configure the Managed Instance plan, not each site, for the outbound integration used here.</p>
+<pre><code class="language-bash">az appservice plan update -g "$RESOURCE_GROUP" -n "$PLAN_NAME" \
+  --vnet "$VNET_NAME" --subnet "$APP_SUBNET_NAME"
+az rest --method get \
+  --url "https://management.azure.com${PLAN_ID}?api-version=2024-11-01" \
+  --query "properties.{used:vnetConnectionsUsed,max:vnetConnectionsMax}" -o json
+
+: "${NSG_NAME:?Set NSG_NAME}"
+az network nsg create -g "$RESOURCE_GROUP" -n "$NSG_NAME" -l "$LOCATION"
+az network nsg rule create -g "$RESOURCE_GROUP" --nsg-name "$NSG_NAME" \
+  -n Allow-Bastion-RDP --priority 200 --direction Inbound --access Allow --protocol Tcp \
+  --source-address-prefixes "$BASTION_SUBNET_CIDR" \
+  --destination-address-prefixes "$APP_SUBNET_CIDR" --destination-port-ranges 3389
+az network vnet subnet update -g "$RESOURCE_GROUP" --vnet-name "$VNET_NAME" \
+  -n "$APP_SUBNET_NAME" --network-security-group "$NSG_NAME"
+
+: "${BASTION_PUBLIC_IP_NAME:?Set BASTION_PUBLIC_IP_NAME}"
+: "${BASTION_NAME:?Set BASTION_NAME}"
+az network public-ip create -g "$RESOURCE_GROUP" -n "$BASTION_PUBLIC_IP_NAME" \
+  -l "$LOCATION" --sku Standard --allocation-method Static
+az network bastion create -g "$RESOURCE_GROUP" -n "$BASTION_NAME" -l "$LOCATION" \
+  --vnet-name "$VNET_NAME" --public-ip-address "$BASTION_PUBLIC_IP_NAME" \
+  --sku Standard --enable-tunneling true --enable-ip-connect true</code></pre>
+<p>The NSG example covers the source's Bastion-to-worker RDP rule, not a complete Bastion networking policy. Review all required Bastion networking rules and existing NSGs. Bastion and the public IP incur charges even when you are not actively connected.</p>
+<ol>
+<li>Open the App Service Plan's <strong>Settings → Configuration → Bastion/RDP</strong> area in the supported portal.</li>
+<li>Enable the option to allow Remote Desktop through Bastion and save.</li>
+<li>Open <strong>Instances</strong>, select the intended worker, and choose <strong>Connect via Bastion</strong>.</li>
+<li>Use IIS Manager, Event Viewer, and logs for diagnostics; represent lasting changes in installation scripts.</li>
+</ol>
+<p>The source reported a portal-only enablement toggle at the time and no documented CLI/API setter. It read <code>properties.network.rdpEnabled</code> to confirm state. Its one-click connection supplied temporary credentials automatically. Do not print or copy those credentials into logs, commands committed to Git, or documentation. Workers were not exposed as ordinary customer-owned VM/NIC resources.</p>
+<p>Two application sites were visible on the same worker in IIS Manager. This confirms access and placement for that PoC, not successful installation-script execution.</p>
+
+<h2 id="storage-mount">Azure Files mount: separate UI support from authentication support</h2>
+<pre><code class="language-bash">: "${STORAGE_ACCOUNT:?Set an existing STORAGE_ACCOUNT}"
+: "${FILE_SHARE:?Set FILE_SHARE}"
+az storage share-rm create -g "$RESOURCE_GROUP" --storage-account "$STORAGE_ACCOUNT" \
+  --name "$FILE_SHARE" --quota 5
+az storage account show -g "$RESOURCE_GROUP" -n "$STORAGE_ACCOUNT" \
+  --query "{allowSharedKeyAccess:allowSharedKeyAccess,allowBlobPublicAccess:allowBlobPublicAccess}" -o json</code></pre>
+<p>In <strong>Plan → Settings → Configuration → Mounts → New mount</strong>, the tested form offered Azure Files, a storage account/share, a custom drive letter such as <code>F:</code>, and required Key Vault and Secret fields. The expected secret held a storage connection string or account key.</p>
+<p>The source's storage account had <code>allowSharedKeyAccess: false</code>, and its PoC did not complete the mount through that flow. It reported no managed-identity mount option in the preview UI. Treat this as an observed compatibility blocker, not a blanket assertion about every Azure Files authentication mode. Validate the current Managed Instance mount feature against your organization's allowed authentication methods; do not re-enable key access merely to make a test succeed.</p>
+<p>The source mentioned a possible script-based alternative but did not validate it. No OAuth/SAS drive-mapping workaround is presented here as supported or working.</p>
+
+<h2 id="scale-installation">Scale and installation-script validation</h2>
+<pre><code class="language-bash">az appservice plan show -g "$RESOURCE_GROUP" -n "$PLAN_NAME" \
+  --query "{maxWorkers:maximumNumberOfWorkers}" -o json</code></pre>
+<p>The source's portal and API both indicated 30 maximum instances for P1v4. The feature comparison's earlier statement that an MI-specific limit was not clearly documented is therefore retained as historical uncertainty, not as a contradiction to the later environment-specific measurement.</p>
+<p>The <code>installScripts[]</code> reference structure was inspected, but the referenced scripts container was empty. No runnable <code>scripts.zip</code> or installation-script content accompanies these documents. The source's remaining validation plan was:</p>
+<ol>
+<li>Prepare a supported, repeatable script covering an IIS module, ACL, registry setting, and one allowed Windows feature.</li>
+<li>Upload the package and verify managed-identity access to the blob.</li>
+<li>Validate startup logs and the resulting configuration through the supported diagnostic path.</li>
+<li>Restart or replace a test instance and verify reapplication.</li>
+<li>Scale out and confirm the same configuration is applied to the new instance.</li>
+</ol>
+
+<h2 id="operations">Production-readiness and cleanup</h2>
+<ul>
+<li>Keep durable configuration in reviewed scripts and secrets in Key Vault.</li>
+<li>Validate logging, installation failure handling, and component patch ownership before production deployment.</li>
+<li>Align NSGs, routing, and name resolution with the actual dependency inventory.</li>
+<li>Use staging to test restart, maintenance, scale-out, and storage-authentication behavior.</li>
+<li>Consider Microsoft Defender for Cloud and appropriate monitoring for the workload.</li>
+<li>Review Bastion, public IP, storage, and plan costs, and remove dedicated PoC resources when no longer needed. Confirm the contents of a resource group before deleting it.</li>
+</ul>
+<p>The original cleanup section stops mid-sentence after noting hourly Bastion charges. It does not contain a complete cleanup procedure. This article does not invent an original deletion script or claim that any resources have been removed.</p>
+<p>Choose Managed Instance when supported legacy Windows dependencies and worker-level diagnostics are important. Prefer ordinary App Service when no OS customization is needed and its workload support fits; evaluate ASE separately when the environment-wide isolation and scale model are requirements.</p>
+<p>Reference: <a href="https://learn.microsoft.com/en-us/azure/app-service/environment/ase-multi-tenant-comparison">ASE v3 and public multitenant App Service comparison</a>.</p>
+<h2 id="resources">Resources</h2><p>No standalone companion files are distributed for this topic. Use the in-page examples and review the editorial notes below for source availability.</p><h2 id="editorial-notes">Editorial notes</h2><p>This page consolidates the following source documents into an English technical guide:</p><ul><li>App Service Managed Instance: advantages by managed feature</li><li>Managed Instance on App Service (Preview): PoC setup and validation</li></ul><ul><li>Actual resource names, subscription context, network addresses, and public IPs have been replaced by variables.</li><li>The repository contains no companion scripts.zip, install scripts, deployment templates, or complete cleanup script for this topic.</li><li>The original cleanup section ends mid-sentence; no missing commands have been represented as source-provided.</li></ul><p>No original credentials or private repository links are included. Do not put populated configuration files or copied production outputs back into this public site.</p></div>
+</article></main>
+<footer><span>Azure Tech Field Notes</span><span>Independent technical notes. Not an official Microsoft publication.</span><span>English edition &middot; September 2026</span></footer>
+<div class="sr-only" id="status" role="status" aria-live="polite"></div>
+</body></html>

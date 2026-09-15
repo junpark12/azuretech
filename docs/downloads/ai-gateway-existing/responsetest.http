@@ -1,0 +1,22 @@
+# Source-derived template. Replace every YOUR_* value before manual use.
+# Set APIM_SUBSCRIPTION_KEY in the VS Code extension host environment.
+@apimBaseUrl = https://YOUR_APIM_HOST
+
+### Responses: one non-streaming request
+# Inspect HTTP status, completion status, usage, and X-PoC-* headers.
+# APIM passes store through; false below is the client's test choice.
+# A 429 can trigger one additional APIM attempt.
+# @name responsesTest
+POST {{apimBaseUrl}}/openai/v1/responses
+Content-Type: application/json
+Accept: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "model": "YOUR_DEPLOYMENT_NAME",
+  "input": "Reply with OK only.",
+  "max_output_tokens": 128,
+  "reasoning": {"effort": "none"},
+  "stream": false,
+  "store": false
+}

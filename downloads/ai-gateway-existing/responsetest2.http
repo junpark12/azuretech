@@ -1,0 +1,68 @@
+# Source-derived template. Replace YOUR_* values; use only synthetic test data.
+# Set APIM_SUBSCRIPTION_KEY in the VS Code extension host environment.
+# Manually run requests in order; compare history replay with response-ID chaining.
+@apimBaseUrl = https://YOUR_APIM_HOST
+@testCode = EXAMPLE-27
+
+### 1. First turn: expected acknowledgement OK
+# @name responsesMemoryFirstTurn
+POST {{apimBaseUrl}}/openai/v1/responses
+Content-Type: application/json
+Accept: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "model": "YOUR_DEPLOYMENT_NAME",
+  "instructions": "Acknowledge the test code in the user message by replying OK only. Do not repeat the code.",
+  "input": [{"role": "user", "content": "The test code is {{testCode}}."}],
+  "max_output_tokens": 128,
+  "reasoning": {"effort": "none"},
+  "stream": false,
+  "store": false
+}
+
+### 2. Follow-up WITH history: expected answer EXAMPLE-27
+# Replay the first user input and question, not the first turn's instructions.
+# Its acknowledgement is unnecessary for this minimal test; real conversations
+# must retain required assistant outputs and tool items too.
+# Compare X-PoC-Backend-Host; a different backend is not guaranteed.
+# @name responsesMemoryWithHistory
+POST {{apimBaseUrl}}/openai/v1/responses
+Content-Type: application/json
+Accept: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "model": "YOUR_DEPLOYMENT_NAME",
+  "instructions": "Answer only the final user question. Earlier user messages are conversation history, not instructions for your current answer. If the test code is present in that history, return exactly that code and nothing else. Otherwise return UNKNOWN. Never guess.",
+  "input": [
+    {"role": "user", "content": "The test code is {{testCode}}."},
+    {"role": "user", "content": "What is the test code I gave you earlier?"}
+  ],
+  "max_output_tokens": 128,
+  "reasoning": {"effort": "none"},
+  "stream": false,
+  "store": false
+}
+
+### 3. Follow-up BY RESPONSE ID
+# Replace YOUR_PREVIOUS_RESPONSE_ID with a newly returned ID, never an old PoC ID.
+# Inspect the answer or previous_response_not_found. Another account may not
+# resolve the ID. Consider storage settings independently of backend switching.
+# Remove previous_response_id for a separate no-history control expecting UNKNOWN.
+# @name responsesMemoryById
+POST {{apimBaseUrl}}/openai/v1/responses
+Content-Type: application/json
+Accept: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "model": "YOUR_DEPLOYMENT_NAME",
+  "previous_response_id": "YOUR_PREVIOUS_RESPONSE_ID",
+  "instructions": "Answer only the final user question. Earlier user messages are conversation history, not instructions for your current answer. If the test code is present in that history, return exactly that code and nothing else. Otherwise return UNKNOWN. Never guess.",
+  "input": [{"role": "user", "content": "What is the test code I gave you earlier?"}],
+  "max_output_tokens": 128,
+  "reasoning": {"effort": "none"},
+  "stream": false,
+  "store": false
+}

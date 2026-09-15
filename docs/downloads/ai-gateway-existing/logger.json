@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "loggerType": "applicationInsights",
+    "resourceId": "/subscriptions/YOUR_MONITORING_SUBSCRIPTION_ID/resourceGroups/YOUR_MONITORING_RESOURCE_GROUP/providers/Microsoft.Insights/components/YOUR_APPLICATION_INSIGHTS_NAME",
+    "credentials": {
+      "connectionString": "YOUR_APPLICATION_INSIGHTS_CONNECTION_STRING",
+      "identityClientId": "SystemAssigned"
+    },
+    "isBuffered": true
+  }
+}

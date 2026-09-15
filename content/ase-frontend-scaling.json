@@ -1,0 +1,15 @@
+{
+  "slug": "ase-frontend-scaling",
+  "category": "App Service",
+  "title": "ASE v3 Front-end Scaling: Signals, Timing, and Cost",
+  "summary": "Understand observed front-end scaling delays, distinguish configured capacity from actual instances, and plan capacity ahead of demand.",
+  "bodyFile": "ase-frontend-scaling.html",
+  "sourceDocuments": ["ASE v3 metric-driven minimum front-end instance adjustment and subsequent scheduled-capacity design"],
+  "downloads": [],
+  "omissions": [
+    "Two original portal screenshots were omitted because they can expose subscription and environment details; their technical findings are described in text.",
+    "Original subscription, tenant, principal, support-case, resource, host, IP, owner, and local-path identifiers are not published.",
+    "The source refers to local runbooks, polling scripts, a cost-query script, and a sample application that are not present in the repository. They are not offered as downloads.",
+    "Historical permission-bypass advice and broad network/basic-authentication changes are not reproduced as deployment recommendations."
+  ]
+}

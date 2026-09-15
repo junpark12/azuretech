@@ -1,0 +1,61 @@
+Azure Tech Field Notes
+
+This repository is a static English technical-documentation site.
+There is no backend, tracking, remote font, runtime source-repository fetch,
+or authentication requirement for visitors.
+
+Layout
+  content\*.json         Topic metadata and translated article HTML
+  content\*.html         Article fragments referenced by bodyFile
+  downloads\<topic>\     Reviewed, parameterized companion files
+  assets\               Shared CSS and browser JavaScript
+  docs\                 Generated GitHub Pages site; do not edit directly
+  build.ps1             Dependency-free Windows PowerShell site generator
+  validate.ps1          Local artifact and link validation
+  preview.ps1           Loopback-only preview server
+
+Build
+  powershell.exe -NoProfile -File .\build.ps1
+  powershell.exe -NoProfile -File .\validate.ps1
+
+Use a shell allowed by your organization's execution policy. Do not change
+machine or user policy merely to run these files. The build requires all ten
+declared topics; -AllowPartial is for local work in progress only.
+
+Preview
+  powershell.exe -NoProfile -File .\preview.ps1 -Port 8765
+  Open http://localhost:8765/azuretech/
+  The /azuretech/ prefix deliberately matches the project-site path.
+
+GitHub Pages configuration
+  Settings > Pages > Build and deployment
+  Source: Deploy from a branch
+  Branch: main
+  Folder: /docs
+  Intended URL: https://junpark12.github.io/azuretech/
+  Publishing or changing Pages settings requires owner approval.
+
+Editing
+  Edit the matching content JSON or bodyFile HTML fragment, rebuild, and
+  review docs before committing. Keep sourceDocuments as English titles,
+  not private source URLs. downloads[].path is site-root-relative:
+  downloads/<topic>/file.ext. Links written inside bodyHtml are relative to
+  docs/topics/<topic>.html, so use ../downloads/<topic>/file.ext.
+  Section headings must have unique IDs. The builder reserves "resources"
+  and "editorial-notes" for the shared closing sections.
+
+Public-content safeguards
+  Never copy source repositories wholesale into this public repository.
+  Keep subscription/tenant/client/principal IDs, actual resource names,
+  customer identities, internal hosts/IPs, user paths, keys, connection
+  strings, and support records out of articles, downloads, filenames,
+  metadata, comments, screenshots, commit messages, and history.
+  Placeholders belong in public files. Populate them only in private local
+  copies. Some templates are illustrative rather than directly runnable.
+  No original screenshots or App Modernization assessments are included.
+  Source-referenced files that were unavailable are explicitly not supplied.
+  Historical tests are evidence from the original environment, not product
+  guarantees or tests executed against the reader's Azure resources.
+  Before publication, perform a manual content and resource review in
+  addition to local automated checks. Automated patterns cannot establish
+  that every possible sensitive value has been found.

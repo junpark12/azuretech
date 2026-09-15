@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<title>Migrating AKS from No Network Policy to Cilium | Azure Tech Field Notes</title>
+<meta name="description" content="Reproduce a measured Azure CNI Overlay migration and progressively enforce DNS, cross-namespace, and external-access policies.">
+<link rel="stylesheet" href="../assets/site.css">
+<script src="../assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header"><a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">AT</span><span>Azure Tech<span class="brand-subtitle">FIELD NOTES</span></span></a><nav aria-label="Site"><a href="../index.html">All topics</a><button id="theme-toggle" type="button" aria-label="Switch color theme">Switch theme</button></nav></header>
+<main id="main" class="topic-layout">
+<aside class="toc"><details open><summary>On this page</summary><ol><li><a href="#decision">1. Choose a policy engine and understand the migration risk</a></li><li><a href="#preflight">2. Preflight production readiness</a></li><li><a href="#create-lab">3. Build a no-policy baseline</a></li><li><a href="#transition">4. Transition and monitor availability</a></li><li><a href="#cross-namespace">5. Move the backend to a separate namespace</a></li><li><a href="#deny-and-dns">6. Deny egress except DNS</a></li><li><a href="#selective-allow">7. Allow only frontend to reach backend</a></li><li><a href="#advanced-policy">8. Cilium-specific operational examples</a></li><li><a href="#rollout-order">9. Progressive enforcement and troubleshooting</a></li><li><a href="#cleanup">10. Remove only the disposable lab</a></li><li><a href="#references">References and limitations</a></li><li><a href="#resources">Resources</a></li><li><a href="#editorial-notes">Editorial notes</a></li></ol></details><a class="back-link" href="../index.html">&#8592; All topics</a></aside>
+<article class="article"><header class="article-header"><p class="eyebrow">AKS / FIELD NOTE</p><h1>Migrating AKS from No Network Policy to Cilium</h1><p class="lead">Reproduce a measured Azure CNI Overlay migration and progressively enforce DNS, cross-namespace, and external-access policies.</p><div class="article-meta"><span>English edition</span><span>Parameterized examples</span><span>September 2026</span></div></header>
+<aside class="editorial-note"><strong>Environment-specific evidence.</strong> Measurements and preview behavior reflect the source investigation. They are not current service guarantees. All configuration values must be supplied for your own environment.</aside>
+<div class="article-body"><p>This article translates a validation report recorded on May 21, 2026 in East US 2. The lab used a two-node Azure CNI Overlay cluster with Kubernetes 1.34.7 and Standard_B2s VMs. All environment identifiers and observed addresses have been removed. Timings below are historical observations from that one lab, not a promise of production availability.</p><h2 id="decision">1. Choose a policy engine and understand the migration risk</h2><table><thead><tr><th>Area</th><th>Cilium</th><th>Calico</th><th>Azure NPM</th></tr></thead><tbody><tr><td>Dataplane/policy model</td><td>Kernel eBPF dataplane</td><td>Policy layer over Azure CNI</td><td>iptables-based policies</td></tr><tr><td>Overlay</td><td>Recommended native path in the source</td><td>Combination constraints require checking</td><td>Combination constraints require checking</td></tr><tr><td>In-place transition from none</td><td>Documented az aks update path</td><td>The source lists a supported update path, subject to networking configuration</td><td>No none-to-NPM path in the source comparison</td></tr><tr><td>Advanced controls</td><td>Cilium policies can express FQDN and L7 controls; validate the AKS-managed feature/support boundary</td><td>Standard AKS comparison is L3/L4</td><td>L3/L4</td></tr><tr><td>Flow observability</td><td>Hubble ecosystem, where enabled and supported</td><td>Separate observability required</td><td>No equivalent included in this report</td></tr><tr><td>Windows</td><td>Do not assume the Linux procedure supports Windows pools</td><td>The source describes Linux-only policy support</td><td>Retirement/support restrictions apply</td></tr></tbody></table><p>The source recommends Cilium to make standard NetworkPolicy enforcement effective while retaining Overlay, and cites Azure NPM Linux retirement on September 30, 2028, plus a Windows retirement window of September 2026. These dates and platform support are a source snapshot; verify current Microsoft lifecycle guidance. Upstream Cilium capabilities do not automatically mean every feature is available in every AKS managed configuration.</p><blockquote>This is not a zero-downtime switch. Nodes are replaced sequentially, Pods are evicted, and the source states that an in-place rollback from Cilium to the Azure dataplane is unavailable. Test a representative staging cluster, back up configuration, and plan recovery through another cluster if necessary.</blockquote><h2 id="preflight">2. Preflight production readiness</h2><ol><li>Inventory custom node iptables rules with <code>iptables -L -n</code>. eBPF datapath behavior may bypass assumptions made by those rules; port required controls to supported policies and verify traffic.</li><li>Inspect <code>externalTrafficPolicy: Local</code> on NodePort/LoadBalancer Services and test source-IP preservation after kube-proxy replacement.</li><li>Check <code>nodeProvisioningProfile</code>. The report says dataplane change is blocked while Node Auto-Provisioning is enabled; plan disable, transition, and re-enable using supported procedures.</li><li>Allow node headroom for cilium-agent. The report suggests approximately 100m CPU and 200Mi memory per node as an operational estimate, not a guaranteed request or limit.</li><li>Review PDBs, application replicas, surge capacity, drain behavior, readiness, and pod distribution. Two or more replicas plus a feasible disruption budget are safer than the single-replica lab.</li><li>Schedule the actual update in an approved maintenance window. Merely configuring an AKS maintenance policy should not be assumed to defer a manually initiated command.</li><li>Prepare policy and flow observability. Hubble availability must be checked; the relay query below detects a relay but does not install or enable it.</li></ol><pre><code class="language-bash">export RESOURCE_GROUP="YOUR_RESOURCE_GROUP"
+export CLUSTER="YOUR_CLUSTER"
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" --query nodeProvisioningProfile
+kubectl get svc -A -o yaml | grep externalTrafficPolicy
+kubectl top nodes
+kubectl get pdb -A
+kubectl get pods -n kube-system -l k8s-app=hubble-relay</code></pre><h2 id="create-lab">3. Build a no-policy baseline</h2><p>The following is a disposable lab, not an instruction to recreate a production cluster. The initial profile should report networkDataplane=azure, networkPlugin=azure, networkPluginMode=overlay, and networkPolicy=none.</p><pre><code class="language-bash">az aks create --resource-group "$RESOURCE_GROUP" --name "$CLUSTER" \
+  --location eastus2 --node-count 2 --node-vm-size Standard_B2s \
+  --network-plugin azure --network-plugin-mode overlay --network-policy none \
+  --enable-managed-identity --generate-ssh-keys
+az aks get-credentials -g "$RESOURCE_GROUP" -n "$CLUSTER"
+kubectl create namespace netpol-test
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" --query networkProfile
+kubectl get nodes</code></pre><h3>Deploy the two-tier application</h3><p>Save the backend Deployment and Service as <code>backend.yaml</code>, and the frontend as <code>frontend.yaml</code>. These are inline examples, not additional source downloads. The namespace creation above supplies a step omitted from the report's deployment block.</p><pre><code class="language-yaml">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: netpol-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: backend}
+  template:
+    metadata:
+      labels: {app: backend}
+    spec:
+      containers:
+      - name: backend
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: netpol-test
+spec:
+  selector: {app: backend}
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: netpol-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: frontend}
+  template:
+    metadata:
+      labels: {app: frontend}
+    spec:
+      containers:
+      - name: frontend
+        image: curlimages/curl:8.8.0
+        command: ["/bin/sh", "-c", "sleep 36000"]</code></pre><pre><code class="language-bash">kubectl -n netpol-test exec deploy/frontend -- \
+  sh -c "curl -s -o /dev/null -w '%{http_code}' http://backend"
+# Recorded outcome: exit code 0, HTTP 200.</code></pre><p>With no policy enforcement, same-namespace traffic succeeded. Image versions are retained from the test and should be reviewed for security and availability before reuse.</p><h2 id="transition">4. Transition and monitor availability</h2><pre><code class="language-bash">az aks update --resource-group "$RESOURCE_GROUP" --name "$CLUSTER" \
+  --network-dataplane cilium --network-policy cilium
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --query '{dataplane:networkProfile.networkDataplane,policy:networkProfile.networkPolicy,state:provisioningState}'
+kubectl get nodes
+kubectl -n netpol-test get pods -o wide
+kubectl -n netpol-test exec deploy/frontend -- \
+  sh -c "curl -s -o /dev/null -w '%{http_code}' http://backend"</code></pre><p>From a second terminal, sample node readiness and frontend-to-backend requests approximately every ten seconds while the update runs. The report used a Kubernetes exec-based probe. It recorded one <code>EXEC_FAIL</code>, which may include a Pod eviction or exec failure and is not proof of an exactly eleven-second application outage.</p><table><thead><tr><th>UTC time, May 21, 2026</th><th>Observed event</th></tr></thead><tbody><tr><td>04:50:19</td><td>Start; two Ready nodes; curl 200</td></tr><tr><td>04:53:17</td><td>Third node added, initially NotReady; requests still 200</td></tr><tr><td>04:54:31</td><td>New node Ready</td></tr><tr><td>04:55:34</td><td>Old node SchedulingDisabled; one EXEC_FAIL</td></tr><tr><td>04:55:45</td><td>Next recorded request 200, about eleven seconds later</td></tr><tr><td>04:56:48</td><td>First replacement complete, two Ready nodes</td></tr><tr><td>04:58:54</td><td>Second replacement begins</td></tr><tr><td>05:00:12</td><td>Second replacement reaches Ready</td></tr><tr><td>05:08:39</td><td>ProvisioningState=Succeeded; total 18 minutes 20 seconds</td></tr></tbody></table><p>The observed replacement sequence was maxSurge: add a new node, make the old node unschedulable and drain it, delete the old node, then repeat. It was not simultaneous reimaging. Final networkDataplane and networkPolicy were both <code>cilium</code>; both nodes and workloads were Ready/Running, and the post-update request returned exit code 0 and HTTP 200.</p><h2 id="cross-namespace">5. Move the backend to a separate namespace</h2><p>Create a backend-only copy of the YAML above with <code>metadata.namespace: backend-ns</code> on both resources. The <code>-n</code> flag does not override a conflicting namespace written in a manifest. Moving the backend is deliberately disruptive in this test.</p><pre><code class="language-bash">kubectl create namespace backend-ns
+kubectl -n netpol-test delete deployment backend
+kubectl -n netpol-test delete service backend
+# backend.yaml must now contain only the backend resources with namespace backend-ns.
+kubectl -n backend-ns apply -f backend.yaml
+kubectl -n netpol-test exec deploy/frontend -- \
+  sh -c "curl -s -o /dev/null -w '%{http_code}' http://backend.backend-ns.svc.cluster.local"
+# Recorded: exit code 0, HTTP 200.</code></pre><p>Cilium installation alone does not default-deny all traffic. Cross-namespace traffic remained allowed before selecting workloads with policies.</p><h2 id="deny-and-dns">6. Deny egress except DNS</h2><pre><code class="language-yaml">apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-egress
+  namespace: netpol-test
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: netpol-test
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53</code></pre><p>The namespaceSelector and podSelector are in the same peer entry: both must match. UDP and TCP DNS are allowed. Policies are additive; the DNS allow policy adds permitted egress to the otherwise isolated Pods.</p><pre><code class="language-bash">kubectl -n netpol-test exec deploy/frontend -- \
+  sh -c "curl -sS --connect-timeout 5 -m 8 -o /dev/null -w '%{http_code}' http://backend.backend-ns.svc.cluster.local"
+# Recorded: curl exit code 28; connection timed out after about 5002 ms.</code></pre><h2 id="selective-allow">7. Allow only frontend to reach backend</h2><pre><code class="language-yaml">apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: netpol-test
+spec:
+  podSelector:
+    matchLabels: {app: frontend}
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: backend-ns
+      podSelector:
+        matchLabels: {app: backend}
+    ports:
+    - protocol: TCP
+      port: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: other
+  namespace: netpol-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: other}
+  template:
+    metadata:
+      labels: {app: other}
+    spec:
+      containers:
+      - name: other
+        image: curlimages/curl:8.8.0
+        command: ["/bin/sh", "-c", "sleep 36000"]</code></pre><pre><code class="language-bash">for APP in frontend other; do
+  kubectl -n netpol-test exec "deploy/$APP" -- \
+    sh -c "curl -sS --connect-timeout 5 -m 8 -o /dev/null -w '%{http_code}' http://backend.backend-ns.svc.cluster.local"
+done</code></pre><table><thead><tr><th>Caller</th><th>Recorded result</th><th>Interpretation</th></tr></thead><tbody><tr><td>frontend</td><td>Exit 0; HTTP 200</td><td>Label-scoped exception works</td></tr><tr><td>other</td><td>Exit 28; timeout after about 5001 ms</td><td>Other workloads remain isolated except DNS</td></tr></tbody></table><h2 id="advanced-policy">8. Cilium-specific operational examples</h2><p>Standard NetworkPolicy covers L3/L4 addresses and ports. CiliumNetworkPolicy adds Cilium-specific selectors and, where supported, FQDN and L7 controls such as allowing only particular HTTP methods or paths. The following examples reproduce each policy pattern in the source. The private CIDRs below are illustrative RFC1918 ranges, not addresses from the lab. Replace them with approved subnets or endpoints.</p><h3>Application Gateway subnet to frontend</h3><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-ingress-from-appgw
+  namespace: demo1
+spec:
+  endpointSelector:
+    matchLabels: {app: frontend}
+  ingress:
+  - fromCIDR:
+    - 10.100.2.0/24 # Illustrative Application Gateway subnet, not a real environment value.
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP</code></pre><h3>Cross-namespace egress to a service tier</h3><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-egress-to-demo2
+  namespace: demo1
+spec:
+  endpointSelector:
+    matchLabels: {app: frontend}
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: demo2
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP</code></pre><h3>CoreDNS access</h3><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: demo1
+spec:
+  endpointSelector: {}
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s-app: kube-dns
+    toPorts:
+    - ports:
+      - port: "53"
+        protocol: UDP
+      - port: "53"
+        protocol: TCP</code></pre><h3>External API by FQDN</h3><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-egress-google-api
+  namespace: demo1
+spec:
+  endpointSelector:
+    matchLabels: {app: backend-api}
+  egress:
+  - toFQDNs:
+    - matchPattern: "*.googleapis.com"
+    - matchPattern: "*.google.com"
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP</code></pre><blockquote>The source's DNS example only permits port 53; it does not demonstrate the DNS proxy/observation rules used to populate FQDN policy state. Do not assume the FQDN block works merely by allowing DNS transport. Check AKS/Cilium support, DNS visibility, and required DNS L7 rules, then verify resolved addresses and dropped flows. Wildcards also do not necessarily match the bare apex domain.</blockquote><h3>MySQL private endpoint</h3><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-egress-mysql-pe
+  namespace: demo1
+spec:
+  endpointSelector:
+    matchLabels: {app: backend-api}
+  egress:
+  - toCIDR:
+    - 10.200.1.5/32 # Illustrative private endpoint only; replace before use.
+    toPorts:
+    - ports:
+      - port: "3306"
+        protocol: TCP</code></pre><h2 id="rollout-order">9. Progressive enforcement and troubleshooting</h2><ol><li>Complete the dataplane transition and confirm provisioningState=Succeeded.</li><li>Verify existing services before applying restrictive policies.</li><li>Apply ingress allow policies to explicitly selected workloads. Ingress becomes isolated for that selected direction; a separate deny-all ingress policy is not always necessary.</li><li>Harden egress in stages: deny-all, DNS, namespace/label-selected services, supported FQDN-based external APIs, and IP-based databases.</li><li>Check both ends of each connection. An egress exception does not override an independent backend ingress deny policy.</li><li>Use Hubble or Cilium drop monitoring to find missing permissions and refine gradually. Do not overstate a policy's reach: enforcement is determined by selected endpoints and directions, not by the mere existence of a policy somewhere in the cluster.</li></ol><h2 id="cleanup">10. Remove only the disposable lab</h2><pre><code class="language-bash"># Destructive: verify the current subscription, resource group and cluster first.
+az aks delete -g "$RESOURCE_GROUP" -n "$CLUSTER" --yes
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER"</code></pre><p>The source's cleanup ran from 05:09:43Z to 05:14:48Z on the validation date. The subsequent show command returned ResourceNotFound (exit code 3), confirming deletion. Cluster deletion is not a rollback strategy for a production workload.</p><h2 id="references">References and limitations</h2><ul><li><a href="https://learn.microsoft.com/en-us/azure/aks/use-network-policies">AKS network policies</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/azure-cni-powered-by-cilium">Azure CNI powered by Cilium</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/update-azure-cni">Update Azure CNI</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/migrate-from-npm-to-cilium-network-policy">NPM to Cilium migration</a></li><li><a href="https://docs.cilium.io/en/stable/security/policy/">Cilium policy documentation</a></li></ul><p>The report verifies the six lab outcomes: initial same-namespace success, successful transition with one failed probe, cross-namespace success without policy, egress blocking with DNS retained, frontend-specific allowance, and other-workload blocking. It does not establish production availability, Windows behavior, or measured L7/FQDN/Hubble operation. No cluster commands were executed for this publication.</p><h2 id="resources">Resources</h2><p>No standalone companion files are distributed for this topic. Use the in-page examples and review the editorial notes below for source availability.</p><h2 id="editorial-notes">Editorial notes</h2><p>This page consolidates the following source documents into an English technical guide:</p><ul><li>AKS Network Policy Migration Validation Report: None to Cilium</li></ul><ul><li>Observed node and Pod names, resource identifiers, and real network addresses are omitted; test timestamps, versions, measured durations and outcomes are preserved.</li><li>No standalone YAML file exists in this folder; all original policy patterns remain inline rather than inventing resource downloads.</li><li>Claims about upstream feature availability and retirement dates are retained as source-era guidance with explicit verification caveats.</li></ul><p>No original credentials or private repository links are included. Do not put populated configuration files or copied production outputs back into this public site.</p></div>
+</article></main>
+<footer><span>Azure Tech Field Notes</span><span>Independent technical notes. Not an official Microsoft publication.</span><span>English edition &middot; September 2026</span></footer>
+<div class="sr-only" id="status" role="status" aria-live="polite"></div>
+</body></html>

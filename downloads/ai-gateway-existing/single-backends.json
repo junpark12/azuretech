@@ -1,0 +1,42 @@
+[
+  [
+    "/subscriptions/YOUR_SUBSCRIPTION_ID/resourceGroups/YOUR_APIM_RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/YOUR_APIM_NAME/backends/YOUR_BACKEND_1_ID",
+    {
+      "properties": {
+        "type": "Single",
+        "protocol": "http",
+        "url": "https://YOUR_FOUNDRY_1_HOST",
+        "tls": {"validateCertificateChain": true, "validateCertificateName": true},
+        "circuitBreaker": {
+          "rules": [{
+            "name": "throttle-429",
+            "failureCondition": {"count": 1, "interval": "PT1M", "statusCodeRanges": [{"min": 429, "max": 429}]},
+            "tripDuration": "PT1M",
+            "acceptRetryAfter": true
+          }]
+        },
+        "description": "YOUR_OWNERSHIP_DESCRIPTION"
+      }
+    }
+  ],
+  [
+    "/subscriptions/YOUR_SUBSCRIPTION_ID/resourceGroups/YOUR_APIM_RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/YOUR_APIM_NAME/backends/YOUR_BACKEND_2_ID",
+    {
+      "properties": {
+        "type": "Single",
+        "protocol": "http",
+        "url": "https://YOUR_FOUNDRY_2_HOST",
+        "tls": {"validateCertificateChain": true, "validateCertificateName": true},
+        "circuitBreaker": {
+          "rules": [{
+            "name": "throttle-429",
+            "failureCondition": {"count": 1, "interval": "PT1M", "statusCodeRanges": [{"min": 429, "max": 429}]},
+            "tripDuration": "PT1M",
+            "acceptRetryAfter": true
+          }]
+        },
+        "description": "YOUR_OWNERSHIP_DESCRIPTION"
+      }
+    }
+  ]
+]

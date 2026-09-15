@@ -1,0 +1,50 @@
+# Source-derived templates, not cloud-tested during publication preparation.
+# Set AI_GATEWAY_API_KEY in the VS Code extension host environment.
+# Replace every YOUR_* value. Requests can incur provider charges.
+@gatewayHost = https://YOUR_GATEWAY_HOST
+@model = YOUR_GATEWAY_MODEL_NAME
+@toolServer = YOUR_MCP_SERVER_NAME
+
+### OpenAI-compatible Chat Completions
+POST {{gatewayHost}}/default/models/openai/v1/chat/completions
+api-key: {{$processEnv AI_GATEWAY_API_KEY}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "messages": [{"role": "user", "content": "Say OK"}]
+}
+
+### MCP tool discovery (Streamable HTTP)
+POST {{gatewayHost}}/default/toolservers/{{toolServer}}/mcp
+api-key: {{$processEnv AI_GATEWAY_API_KEY}}
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+
+### Token-limit experiment: expensive request, run only with an approved budget
+# The source allowed 10,000 completion tokens with a 100-token/minute policy.
+# The first request exceeded the policy; later requests were blocked for minutes.
+POST {{gatewayHost}}/default/models/openai/v1/chat/completions
+api-key: {{$processEnv AI_GATEWAY_API_KEY}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "messages": [{"role": "user", "content": "Tell me funny stories in Korean."}],
+  "max_completion_tokens": 10000
+}
+
+### Small request for request-limit or IP-filter testing
+# Manually repeat seven times to compare with the documented five-calls/60s test.
+# No automatic retry or load loop is included.
+POST {{gatewayHost}}/default/models/openai/v1/chat/completions
+api-key: {{$processEnv AI_GATEWAY_API_KEY}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "messages": [{"role": "user", "content": "hi"}],
+  "max_completion_tokens": 5
+}

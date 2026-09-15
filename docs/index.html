@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<title>Home | Azure Tech Field Notes</title>
+<meta name="description" content="English Azure engineering guides, measured findings, and parameterized resources.">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header"><a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">AT</span><span>Azure Tech<span class="brand-subtitle">FIELD NOTES</span></span></a><nav aria-label="Site"><a href="index.html">All topics</a><button id="theme-toggle" type="button" aria-label="Switch color theme">Switch theme</button></nav></header>
+<main id="main" class="home">
+<section class="hero"><div class="hero-copy"><p class="eyebrow">AZURE / APPLIED ENGINEERING</p><h1>From investigation<br>to implementation.</h1><p class="lead">Practical field notes on AI gateways, Kubernetes, and App Service. Procedures, measured results, and the caveats that matter.</p></div><div class="hero-stats" aria-label="Collection overview"><div><strong>10</strong><span>topic guides</span></div><div><strong>03</strong><span>technical areas</span></div><p>English guides<br>Parameterized examples<br>Source-derived downloads</p></div></section>
+<aside class="editorial-note"><strong>Read before you deploy.</strong> Results describe the original test environments, not service guarantees. Replace placeholders locally. Check current support, pricing, and permissions before using any example.</aside>
+<section aria-labelledby="browse-title"><div class="section-heading"><div><p class="eyebrow">THE COLLECTION</p><h2 id="browse-title">Explore the field notes</h2></div><p id="result-count" role="status">10 topics</p></div>
+<div class="search-controls"><label for="search">Search topics<input id="search" type="search" placeholder="Try gateway, scaling, private endpoint..." autocomplete="off"></label><div class="filters" role="group" aria-label="Filter by technical area"><button type="button" class="filter active" data-filter="All" aria-pressed="true">All topics</button><button type="button" class="filter" data-filter="AI" aria-pressed="false">AI</button><button type="button" class="filter" data-filter="AKS" aria-pressed="false">AKS</button><button type="button" class="filter" data-filter="App Service" aria-pressed="false">App Service</button></div></div>
+<div class="topic-grid"><article class="topic-card" data-category="AI" data-search="Azure AI Gateway Tier: Preview Setup, Policies, MCP, and Token Monitoring A source-based technical evaluation of the dedicated AI Gateway preview tier, including measured policy behavior and application-level token reporting. AI">
+<span class="eyebrow">AI</span><h2><a href="topics/ai-gateway.html">Azure AI Gateway Tier: Preview Setup, Policies, MCP, and Token Monitoring</a></h2><p>A source-based technical evaluation of the dedicated AI Gateway preview tier, including measured policy behavior and application-level token reporting.</p><div class="card-bottom"><span>4 resource files</span><a href="topics/ai-gateway.html" aria-label="Read Azure AI Gateway Tier: Preview Setup, Policies, MCP, and Token Monitoring">Read field note <span aria-hidden="true">&#8599;</span></a></div>
+</article>
+<article class="topic-card" data-category="AI" data-search="Codex on Azure: Foundry setup, APIM routing, streaming failures, and capacity design A consolidated implementation and test record for Azure-hosted Codex, including identity, load balancing, mid-stream 429 behavior, and PTU/PAYG sizing. AI">
+<span class="eyebrow">AI</span><h2><a href="topics/codex.html">Codex on Azure: Foundry setup, APIM routing, streaming failures, and capacity design</a></h2><p>A consolidated implementation and test record for Azure-hosted Codex, including identity, load balancing, mid-stream 429 behavior, and PTU/PAYG sizing.</p><div class="card-bottom"><span>In-page examples</span><a href="topics/codex.html" aria-label="Read Codex on Azure: Foundry setup, APIM routing, streaming failures, and capacity design">Read field note <span aria-hidden="true">&#8599;</span></a></div>
+</article>
+<article class="topic-card" data-category="AI" data-search="Existing APIM as a Foundry AI Gateway: Backend Pools, Managed Identity, Retry, and Monitoring Configure existing APIM Standard v2 and Foundry resources with private backend access, bounded 429 retry, and privacy-conscious Application Insights diagnostics. AI">
+<span class="eyebrow">AI</span><h2><a href="topics/ai-gateway-existing.html">Existing APIM as a Foundry AI Gateway: Backend Pools, Managed Identity, Retry, and Monitoring</a></h2><p>Configure existing APIM Standard v2 and Foundry resources with private backend access, bounded 429 retry, and privacy-conscious Application Insights diagnostics.</p><div class="card-bottom"><span>15 resource files</span><a href="topics/ai-gateway-existing.html" aria-label="Read Existing APIM as a Foundry AI Gateway: Backend Pools, Managed Identity, Retry, and Monitoring">Read field note <span aria-hidden="true">&#8599;</span></a></div>
+</article>
+<article class="topic-card" data-category="AI" data-search="Translation latency across six GPT models: an April 2026 Azure benchmark Measured translation latency, token output, migration options, and limitations from a six-model Azure OpenAI comparison. AI">
+<span class="eyebrow">AI</span><h2><a href="topics/translation-performance.html">Translation latency across six GPT models: an April 2026 Azure benchmark</a></h2><p>Measured translation latency, token output, migration options, and limitations from a six-model Azure OpenAI comparison.</p><div class="card-bottom"><span>In-page examples</span><a href="topics/translation-performance.html" aria-label="Read Translation latency across six GPT models: an April 2026 Azure benchmark">Read field note <span aria-hidden="true">&#8599;</span></a></div>
+</article>
+<article class="topic-card" data-category="AKS" data-search="AKS Application Routing Gateway API: Migration, Routing, and Key Vault TLS Migrate an internal NGINX ingress to managed Gateway API while separating current operator-managed TLS from historical manual CSI guidance. AKS">
+<span class="eyebrow">AKS</span><h2><a href="topics/istio-gateway-api.html">AKS Application Routing Gateway API: Migration, Routing, and Key Vault TLS</a></h2><p>Migrate an internal NGINX ingress to managed Gateway API while separating current operator-managed TLS from historical manual CSI guidance.</p><div class="card-bottom"><span>6 resource files</span><a href="topics/istio-gateway-api.html" aria-label="Read AKS Application Routing Gateway API: Migration, Routing, and Key Vault TLS">Read field note <span aria-hidden="true">&#8599;</span></a></div>
+</article>
+<article class="topic-card" data-category="AKS" data-search="Artifact Streaming on AKS: Configure, Benchmark, and Roll Back Enable ACR artifact streaming for eligible Linux node pools and measure cold-start improvement without cache bias. AKS">
+<span class="eyebrow">AKS</span><h2><a href="topics/acr-streaming.html">Artifact Streaming on AKS: Configure, Benchmark, and Roll Back</a></h2><p>Enable ACR artifact streaming for eligible Linux node pools and measure cold-start improvement without cache bias.</p><div class="card-bottom"><span>In-page examples</span><a href="topics/acr-streaming.html" aria-label="Read Artifact Streaming on AKS: Configure, Benchmark, and Roll Back">Read field note <span aria-hidden="true">&#8599;</span></a></div>
+</article>
+<article class="topic-card" data-category="AKS" data-search="Migrating AKS from No Network Policy to Cilium Reproduce a measured Azure CNI Overlay migration and progressively enforce DNS, cross-namespace, and external-access policies. AKS">
+<span class="eyebrow">AKS</span><h2><a href="topics/cilium-network-policy.html">Migrating AKS from No Network Policy to Cilium</a></h2><p>Reproduce a measured Azure CNI Overlay migration and progressively enforce DNS, cross-namespace, and external-access policies.</p><div class="card-bottom"><span>In-page examples</span><a href="topics/cilium-network-policy.html" aria-label="Read Migrating AKS from No Network Policy to Cilium">Read field note <span aria-hidden="true">&#8599;</span></a></div>
+</article>
+<article class="topic-card" data-category="AKS" data-search="Self-Managed Envoy Gateway on AKS and NGINX Migration Deploy an internal Envoy Gateway with independent data planes, safe draining, and explicit replacements for NGINX routing features. AKS">
+<span class="eyebrow">AKS</span><h2><a href="topics/envoy-gateway.html">Self-Managed Envoy Gateway on AKS and NGINX Migration</a></h2><p>Deploy an internal Envoy Gateway with independent data planes, safe draining, and explicit replacements for NGINX routing features.</p><div class="card-bottom"><span>In-page examples</span><a href="topics/envoy-gateway.html" aria-label="Read Self-Managed Envoy Gateway on AKS and NGINX Migration">Read field note <span aria-hidden="true">&#8599;</span></a></div>
+</article>
+<article class="topic-card" data-category="App Service" data-search="ASE v3 Front-end Scaling: Signals, Timing, and Cost Understand observed front-end scaling delays, distinguish configured capacity from actual instances, and plan capacity ahead of demand. App Service">
+<span class="eyebrow">App Service</span><h2><a href="topics/ase-frontend-scaling.html">ASE v3 Front-end Scaling: Signals, Timing, and Cost</a></h2><p>Understand observed front-end scaling delays, distinguish configured capacity from actual instances, and plan capacity ahead of demand.</p><div class="card-bottom"><span>In-page examples</span><a href="topics/ase-frontend-scaling.html" aria-label="Read ASE v3 Front-end Scaling: Signals, Timing, and Cost">Read field note <span aria-hidden="true">&#8599;</span></a></div>
+</article>
+<article class="topic-card" data-category="App Service" data-search="Managed Instance on App Service: Capabilities and PoC Explore plan-scoped Windows customization, app-scoped private endpoints, Bastion diagnostics, and the limitations observed during a preview PoC. App Service">
+<span class="eyebrow">App Service</span><h2><a href="topics/managed-instance.html">Managed Instance on App Service: Capabilities and PoC</a></h2><p>Explore plan-scoped Windows customization, app-scoped private endpoints, Bastion diagnostics, and the limitations observed during a preview PoC.</p><div class="card-bottom"><span>In-page examples</span><a href="topics/managed-instance.html" aria-label="Read Managed Instance on App Service: Capabilities and PoC">Read field note <span aria-hidden="true">&#8599;</span></a></div>
+</article></div><p id="empty-state" hidden>No topics match your search. Try another term or choose All topics.</p></section>
+<section class="about-grid" aria-label="About this edition"><div><h2>Designed to be used</h2><p>Each topic brings related technical notes together in one page, with a section index, copyable examples, and companion downloads when available.</p></div><div><h2>Prepared for public sharing</h2><p>Environment identifiers are replaced with variables or placeholders. Original private screenshots, customer assessments, and unavailable local files are not distributed.</p></div></section>
+</main>
+<footer><span>Azure Tech Field Notes</span><span>Independent technical notes. Not an official Microsoft publication.</span><span>English edition &middot; September 2026</span></footer>
+<div class="sr-only" id="status" role="status" aria-live="polite"></div>
+</body></html>

@@ -1,0 +1,14 @@
+{
+  "slug": "managed-instance",
+  "category": "App Service",
+  "title": "Managed Instance on App Service: Capabilities and PoC",
+  "summary": "Explore plan-scoped Windows customization, app-scoped private endpoints, Bastion diagnostics, and the limitations observed during a preview PoC.",
+  "bodyFile": "managed-instance.html",
+  "sourceDocuments": ["App Service Managed Instance: advantages by managed feature", "Managed Instance on App Service (Preview): PoC setup and validation"],
+  "downloads": [],
+  "omissions": [
+    "Actual resource names, subscription context, network addresses, and public IPs have been replaced by variables.",
+    "The repository contains no companion scripts.zip, install scripts, deployment templates, or complete cleanup script for this topic.",
+    "The original cleanup section ends mid-sentence; no missing commands have been represented as source-provided."
+  ]
+}

@@ -1,0 +1,192 @@
+<h2 id="scope">Scope and reading guide</h2>
+<p>This article consolidates a July-August 2026 ASE v3 investigation. The original goal was to react to front-end CPU and memory metrics. The investigation instead found missing metric samples and substantial scaling delays, and moved toward scheduled, proactive capacity. Read the final design direction before implementing the earlier experimental runbook.</p>
+<blockquote>Measurements, billing deductions, portal behavior, and API quirks below describe the source test environment. They are not a Microsoft service-level guarantee, current price quote, or assurance of identical behavior in another subscription. Confirm current product documentation, regional availability, permissions, and billing before production use.</blockquote>
+<p>The test configuration used an external-VIP ASE v3 in East US, Linux I1v2 workers, a Node.js 22 LTS sample application, and an Automation Account with a system-assigned managed identity. The front-end size reported by the service was <code>Standard_D2d_v4</code>. Actual environment identifiers have been replaced by variables.</p>
+<pre><code class="language-bash"># Supply these values in your own shell; do not commit them.
+: "${SUBSCRIPTION_ID:?Set SUBSCRIPTION_ID}"
+: "${RESOURCE_GROUP:?Set RESOURCE_GROUP}"
+: "${ASE_NAME:?Set ASE_NAME}"
+: "${LOCATION:?Set LOCATION}"
+az account set --subscription "$SUBSCRIPTION_ID"
+ASE_ID="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Web/hostingEnvironments/$ASE_NAME"
+
+az quota show --resource-name I1v2 \
+  --scope "/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Web/locations/$LOCATION" \
+  --query "properties.limit.value" -o tsv</code></pre>
+<p>Check quota before creating an ASE. The original attempt in East US 2 had zero Isolated v2 quota; a quota update returned <code>QuotaNotAvailableForResource</code>. An available region with quota was used instead. Regional SKU availability does not itself establish that a particular subscription has usable quota. An empty ASE can still incur a minimum charge.</p>
+
+<h2 id="signals">Choose the right resource and signal</h2>
+<table><thead><tr><th>Resource type</th><th>What it represents</th><th>Relevant signals</th></tr></thead><tbody>
+<tr><td><code>Microsoft.Web/hostingEnvironments</code></td><td>ASE infrastructure and front ends</td><td><code>TotalFrontEnds</code>; other definitions may exist without samples</td></tr>
+<tr><td><code>Microsoft.Web/serverfarms</code></td><td>App Service Plan workers</td><td>CPU, memory, HTTP queue</td></tr>
+<tr><td><code>Microsoft.Web/sites</code></td><td>Individual applications</td><td>Requests and response time</td></tr>
+</tbody></table>
+<p>The ASE metric definitions listed <code>CpuPercentage</code>, <code>MemoryPercentage</code>, <code>DiskQueueLength</code>, and <code>TotalFrontEnds</code>. Over 72 hourly periods, CPU and memory had zero periods with actual samples, while <code>TotalFrontEnds</code> had 72. Querying the <code>Instance</code> dimension did not produce CPU time series either.</p>
+<p>A 12-minute load test at approximately 180 requests/second produced application requests and response-time samples, worker CPU of 12-14%, worker memory of 30-31%, and a worker HTTP queue of zero. ASE CPU and memory still had no samples. The source also observed missing Linux socket/TCP metric samples. Do not treat a metric definition as proof that the deployment emits that metric.</p>
+<pre><code class="language-bash">az monitor metrics list-definitions --resource "$ASE_ID" \
+  --query "[].{name:name.value,unit:unit}" -o table
+
+az monitor metrics list --resource "$ASE_ID" \
+  --metrics CpuPercentage MemoryPercentage TotalFrontEnds \
+  --interval PT1M --aggregation Average Count -o json
+
+: "${START_UTC:?Set START_UTC to an ISO 8601 UTC timestamp}"
+: "${END_UTC:?Set END_UTC to an ISO 8601 UTC timestamp}"
+az rest --method get \
+  --url "https://management.azure.com${ASE_ID}/providers/Microsoft.Insights/metrics?api-version=2023-10-01&amp;metricnames=CpuPercentage,TotalFrontEnds&amp;timespan=${START_UTC}/${END_UTC}&amp;interval=PT1M&amp;aggregation=Average,Count"</code></pre>
+<h3>Missing is not zero</h3>
+<p>The source saw missing intervals represented as <code>average: 0, count: 0</code>. Include <code>Count</code> in compatible metric queries and use only points with <code>count &gt; 0</code>. Filtering only on a non-null average can turn missing measurements into apparent idle capacity and trigger an unsafe scale-in. Use the metric's supported aggregation: application request volume is a total, not worker CPU's average.</p>
+<p>Use application <code>Requests</code> as a demand proxy; worker CPU, memory, and <code>HttpQueueLength</code> provide supporting signals. Worker CPU is not front-end CPU. <code>AverageResponseTime</code> can indicate degraded application experience, but cannot alone isolate a front-end bottleneck.</p>
+<h3>Portal inspection</h3>
+<p>In the observed portal, the ASE blade did not expose a Metrics entry. Open <strong>Monitor → Metrics → Select a scope</strong>, choose the appropriate resource group, filter to <strong>App Service Environments</strong>, and select the ASE. Plot <strong>Total Front Ends</strong>. A flat line after resetting the minimum helped confirm that the configured floor persisted. Missing CPU graphs must not be interpreted as zero CPU.</p>
+
+<h2 id="capacity-api">Configured, reported-ready, and actual capacity</h2>
+<pre><code class="language-bash">az rest --method get \
+  --url "https://management.azure.com${ASE_ID}/configurations/ingress?api-version=2023-12-01" \
+  --query "properties.{min:minimumInstanceCount,ready:readyInstanceCount,state:provisioningState}" -o json
+
+az rest --method get \
+  --url "https://management.azure.com${ASE_ID}/multiRolePools/default?api-version=2023-12-01" \
+  --query "properties.instanceNames" -o json</code></pre>
+<table><thead><tr><th>Value</th><th>Interpretation in this investigation</th></tr></thead><tbody>
+<tr><td><code>minimumInstanceCount</code></td><td>The configured floor, not an instantaneous instance count.</td></tr>
+<tr><td><code>readyInstanceCount</code></td><td>A useful leading signal, but it advanced before the observed instance list.</td></tr>
+<tr><td><code>multiRolePools/default → instanceNames</code></td><td>The instance list used to measure actual convergence. Do not publish its addresses.</td></tr>
+<tr><td><code>TotalFrontEnds</code></td><td>Useful for trends and alerts; aggregation, ingestion delay, and missing intervals affect precision.</td></tr>
+<tr><td><code>provisioningState</code></td><td>Not sufficient evidence that newly requested front ends are available.</td></tr>
+</tbody></table>
+<p>After a 2-to-4 request, <code>provisioningState</code> was already <code>Succeeded</code> at four minutes, while the reported ready count was still two at fourteen minutes. In another 2-to-3 experiment, the ready count became three at eight minutes and four at nine minutes, while the actual list still contained two instances. Actual capacity reached four around twenty-one minutes and settled at three around forty minutes.</p>
+<p>Consequently, a guard based only on <code>provisioningState == Succeeded</code> is insufficient. A mismatch between ready and minimum is also not the final convergence check. Use the actual instance list alongside the configured floor and ready signal. If ready exceeds actual capacity, the platform may already be scaling: avoid repeatedly increasing the target.</p>
+<p>The ingress response does not provide a last-change timestamp. Explicit cooldowns require external state, such as an Automation Variable. The source saw temporarily empty ingress and role-pool responses during scaling; fail visibly or defer with an operational warning rather than interpreting an empty response as zero instances.</p>
+<p>The tested <code>capacities/compute</code> and <code>capacities/virtualip</code> endpoints returned HTTP 400; <code>workerPools</code> was not usable for this ASE v3 scenario. The legacy <code>frontEndScaleFactor</code> is not the ASE v3 control described here.</p>
+
+<h2 id="change-minimum">Changing the minimum safely</h2>
+<pre><code class="language-bash"># This changes capacity and can incur charges. Review the value first.
+az rest --method put \
+  --url "https://management.azure.com${ASE_ID}/configurations/ingress?api-version=2023-12-01" \
+  --headers "Content-Type=application/json" \
+  --body '{"properties":{"minimumInstanceCount":3}}'</code></pre>
+<p>The source observed a <code>2022-09-01</code> PUT appearing successful, then reverting roughly 35 seconds later. Including a fuller request body did not resolve it, and the activity log did not show a useful failure. PUT requests using <code>2023-12-01</code> or <code>2024-04-01</code> persisted in that environment. These examples therefore use <code>2023-12-01</code>. Confirm the supported API version for your deployment and use repeated GETs to establish a stable result; early reads sometimes returned an older value.</p>
+<table><thead><tr><th>Operation</th><th>Observed elapsed time</th><th>Behavior</th></tr></thead><tbody>
+<tr><td>2 → 4</td><td>38 minutes</td><td>Actual count jumped to the target rather than stopping at three.</td></tr>
+<tr><td>2 → 3</td><td>20 minutes</td><td>Temporary overshoot was observed.</td></tr>
+<tr><td>3 → 4</td><td>35 minutes</td><td>Similar latency despite a smaller increment.</td></tr>
+<tr><td>4 → 2, after load</td><td>4 → 3 at 15 minutes; 3 → 2 at 4 hours 15 minutes</td><td>Stepwise scale-in.</td></tr>
+<tr><td>4 → 2, idle experiment</td><td>4 → 3 at 3 hours 36 minutes; no 3 → 2 by 6 hours 34 minutes</td><td>No deterministic scale-in deadline.</td></tr>
+</tbody></table>
+<p>The source inferred a roughly 30-minute decision cadence plus roughly ten minutes of execution. A planning allowance of at least forty minutes was recommended for the observed environment, not guaranteed as a universal upper bound. Explicit PUTs did not bypass the platform loop. Repeated small increases can compound delay; choose a sufficient target up front.</p>
+<p>Raising a floor requests capacity; lowering it merely permits the platform to release capacity. The two operations are not symmetric. A floor of two remained unchanged for sixty hours across 245 samples. Lower the configured floor after an event rather than leaving it at the highest historical setting. Slow, stepwise scale-in is not proof of zero connection impact: consider long-lived connections and background workloads.</p>
+
+<h2 id="billing">Billing observations and cost controls</h2>
+<blockquote>The following formula and prices were inferred from the source's July-August 2026 billing and retail-price comparison. They are not a contractual pricing specification. Confirm current meters, region, currency, discounts, and actual charges in your subscription.</blockquote>
+<table><thead><tr><th>Resource-ID suffix</th><th>Source interpretation</th></tr></thead><tbody>
+<tr><td><code>isolatedv2mininstancefee_for_{ASE_NAME}</code></td><td>Minimum charge for an empty ASE.</td></tr>
+<tr><td><code>isolatedv2frontendmininstancefee_for_{ASE_NAME}</code></td><td>Additional configured front-end minimum above two.</td></tr>
+</tbody></table>
+<p>The observed East US Linux I1v2 worker price was USD 0.386/hour. The front-end fee matched the Windows I1v2 retail rate of USD 0.547/hour. Source billing suggested:</p>
+<pre><code>Observed additional front-end cost
+  = max(minimumInstanceCount - 2, 0) × configured hours × regional rate</code></pre>
+<p>A full day with minimum three produced 24 billable units and USD 13.128. A day with brief minimum-three/four settings produced two billable units and USD 1.094. These two rows totalled 26 units and USD 14.222. The source inferred billing followed the configured minimum rather than the instantaneous observed count: actual capacity remained elevated for hours after the floor was lowered, without matching extra front-end units. Temporary platform overshoot likewise did not produce additional units in those observations.</p>
+<table><thead><tr><th>Configured minimum</th><th>East US, 30 days (USD, approximate)</th><th>Korea Central, 30 days (KRW, approximate)</th></tr></thead><tbody>
+<tr><td>2</td><td>0 additional</td><td>0 additional</td></tr>
+<tr><td>3</td><td>394</td><td>633,118</td></tr>
+<tr><td>5</td><td>1,182</td><td>1,899,353</td></tr>
+<tr><td>10</td><td>3,151</td><td>5,064,941</td></tr>
+<tr><td>20</td><td>7,089</td><td>11,396,117</td></tr>
+</tbody></table>
+<p>The source's Korea Central retail rates were USD 0.573 or KRW 879.33 per front-end unit-hour, and USD 0.412 or KRW 632.26 per Linux worker-hour. Currency-specific retail prices are not simply a user-applied exchange rate. Totals above use the quoted rates and 720 hours, rounding only at the end; they exclude workers and other services.</p>
+<p>In <strong>Cost Management + Billing → Cost analysis</strong>, group by <strong>Resource</strong> and inspect the full resource-ID tooltip. Front-end and worker charges can share the <code>I1 v2 App</code> meter, so grouping only by Meter or Meter Category can obscure the distinction. The front-end billing resource can display the ASE's name and resource type even though it is a separate charge entry.</p>
+<pre><code class="language-bash"># Public retail-price endpoint; no subscription identifiers required.
+curl --fail --silent --show-error \
+  "https://prices.azure.com/api/retail/prices?\$filter=serviceName%20eq%20'Azure%20App%20Service'%20and%20armRegionName%20eq%20'eastus'%20and%20contains(meterName,'I1%20v2')"</code></pre>
+<p>Follow pagination if the retail-price response has a next-page link and select the applicable SKU and price type. Cost Management API calls are rate-limited; handle 429 responses and retry after the indicated delay.</p>
+
+<h2 id="automation">Earlier metric-driven Automation design</h2>
+<p>The source retained a published PowerShell runbook but disabled its reactive schedule after the timing investigation. The runbook source itself is not in the repository; this section documents its reported behavior, not a downloadable or production-ready implementation.</p>
+<p>Authentication used <code>Connect-AzAccount -Identity</code>. Monitoring Reader was assigned at ASE scope. Ingress writes required <strong>App Service Environment Contributor</strong>; Website Contributor alone lacked <code>Microsoft.Web/hostingEnvironments/configurations/write</code>. The experiment also had broader resource-group roles for app/plan manipulation and earlier monitoring experiments; do not copy unused broad assignments into production.</p>
+<pre><code class="language-bash">: "${AUTOMATION_PRINCIPAL_ID:?Set the managed identity principal ID}"
+az role assignment create \
+  --assignee-object-id "$AUTOMATION_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "App Service Environment Contributor" --scope "$ASE_ID"</code></pre>
+<ol>
+<li>Authenticate with the managed identity and select the subscription.</li>
+<li>Read actual front-end count from <code>multiRolePools/default</code> and ingress configuration.</li>
+<li>Defer when provisioning is incomplete, actual count is below the floor, or ready count exceeds actual count. Do not rely only on provisioning state.</li>
+<li>Enumerate the ASE's applications and plans; aggregate application requests and examine maximum worker CPU, memory, and queue signals. Reject missing samples.</li>
+<li>Compute requests per front end per minute. If no valid signals exist, retain current capacity and emit an operational diagnostic.</li>
+<li>Apply threshold logic, bounds, and optional dry-run output. Scale-in requires known low signals; missing data must not enable scale-in.</li>
+<li>Write ingress only when a reviewed desired floor differs from the current one.</li>
+</ol>
+<table><thead><tr><th>Parameter</th><th>Source default</th></tr></thead><tbody>
+<tr><td>Scale-out / scale-in requests per front end per minute</td><td>6,000 / 1,500</td></tr>
+<tr><td>Worker CPU / memory scale-out threshold</td><td>70% / 75%</td></tr>
+<tr><td>Worker HTTP queue scale-out threshold</td><td>10</td></tr>
+<tr><td>Floor / ceiling</td><td>2 / 10</td></tr>
+<tr><td>Scale-out / scale-in increment</td><td>2 / 1</td></tr>
+<tr><td>Lookback</td><td>5 minutes</td></tr>
+<tr><td>Enable scale-in</td><td>False; an explicit opt-in</td></tr>
+<tr><td>WhatIfOnly</td><td>Dry-run mode without a capacity write</td></tr>
+</tbody></table>
+<p>The reported dry runs exercised no change, a near-threshold no-change case, 3-to-5 scale-out, suppressed scale-in, and opted-in 3-to-2 scale-in. These are historical source tests, not validation performed for this site. In PowerShell helpers, diagnostics written with <code>Write-Output</code> can contaminate a scalar return value; use a separate diagnostic stream such as <code>Write-Verbose</code> and maintain a clear return contract.</p>
+<p>The historical notes describe draft upload, publication, job invocation, output/stream inspection, and a 15-minute schedule experiment through the Automation REST API <code>2023-11-01</code>. Later notes explicitly disable the reactive schedule. Treat that later state as authoritative within the source. Verify currently supported scheduling intervals and use a supported trigger for sub-hourly execution; do not assume that a historical <code>frequency: Minute</code> request is a supported production scheduling contract.</p>
+<pre><code class="language-bash">: "${AUTOMATION_ACCOUNT:?Set AUTOMATION_ACCOUNT}"
+: "${RUNBOOK_NAME:?Set RUNBOOK_NAME}"
+: "${JOB_ID:?Set an existing job ID to inspect}"
+AA_URL="https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Automation/automationAccounts/$AUTOMATION_ACCOUNT"
+az rest --method get --url "$AA_URL/runbooks/$RUNBOOK_NAME?api-version=2023-11-01" \
+  --query "properties.{state:state,params:parameters}" -o json
+az rest --method get --url "$AA_URL/jobs/$JOB_ID?api-version=2023-11-01" \
+  --query "properties.{status:status,exception:exception}" -o json
+az rest --method get --url "$AA_URL/jobs/$JOB_ID/output?api-version=2023-11-01"
+az rest --method get --url "$AA_URL/jobs/$JOB_ID/streams?api-version=2023-11-01"</code></pre>
+
+<h2 id="proactive-design">Recommended direction from the investigation</h2>
+<p>Reactive scaling cannot reliably absorb a traffic spike that rises within minutes when the requested front ends arrive tens of minutes later. The proposed replacement was a desired-state schedule: a stable base, optional daily windows, and explicit event overrides, reconciled regularly.</p>
+<pre><code class="language-json">{
+  "timeZone": "Korea Standard Time",
+  "default": 2,
+  "daily": [
+    {"days": "Mon-Fri", "from": "08:00", "to": "20:00", "min": 3}
+  ],
+  "overrides": [
+    {
+      "start": "2030-01-15T08:00",
+      "end": "2030-01-15T13:00",
+      "min": 4,
+      "reason": "Example event",
+      "owner": "EVENT_OWNER"
+    }
+  ]
+}</code></pre>
+<p>This is an illustrative schema, not an active schedule or runnable implementation. Replace the example event dates and owner before use.</p>
+<ul>
+<li>Resolve overlapping requirements with the maximum requested floor, not last-write-wins.</li>
+<li>Apply a lead-time setting automatically. A forty-minute allowance means an 08:00 event needs a request by 07:20 in the observed planning model; measure a suitable margin for your own environment.</li>
+<li>Ignore expired overrides, warn about stale entries, and lower the minimum after events.</li>
+<li>Enforce an explicit maximum allowed setting to prevent expensive input errors.</li>
+<li>Convert schedule time zones explicitly; Automation jobs run in UTC.</li>
+<li>On invalid configuration, retain current capacity and alert an operator. Never silently reset to the base during an event.</li>
+<li>Use a recurring reconciler so one failed invocation can be retried, while avoiding conflicting changes during scale-out.</li>
+</ul>
+<table><thead><tr><th>Configuration store</th><th>Source assessment</th></tr></thead><tbody>
+<tr><td>One versioned JSON blob</td><td>Readable whole configuration, history and rollback; favored for a reviewed operational design.</td></tr>
+<tr><td>Automation Variable</td><td>No additional resource; useful for experiments, but a single-line editor can increase input errors.</td></tr>
+<tr><td>Table Storage</td><td>Convenient per-event rows; less convenient for reviewing the complete configuration.</td></tr>
+<tr><td>App Configuration</td><td>Purpose-built configuration management, with a separate service cost.</td></tr>
+<tr><td>Git plus pipeline</td><td>Review and approval history; consider emergency update latency.</td></tr>
+</tbody></table>
+<p>Open work in the source included implementing this replacement runbook, verifying lead-time behavior, selecting the store, repeating timing measurements under load, and determining whether a second PUT during scale-out resets or changes the in-progress operation. None of those unfinished items is presented here as completed.</p>
+
+<h2 id="troubleshooting">Deployment and troubleshooting lessons</h2>
+<ul>
+<li><strong>Quota:</strong> inspect the target region before deployment; a supported region can still have zero usable quota.</li>
+<li><strong>SCM reachability:</strong> distinguish a network timeout from an authentication response. Review the ASE networking requirements and restrict access to required sources/ports; do not copy broad Internet allow rules from a lab.</li>
+<li><strong>Runtime:</strong> inspect <code>az webapp list-runtimes --os-type linux</code>. Node 20 was rejected in the source environment; Node 22 LTS was selected from supported options.</li>
+<li><strong>Stopped app:</strong> deployment can succeed while the application remains stopped after earlier startup failures. Check application state and startup logs.</li>
+<li><strong>Kudu 401:</strong> check the intended deployment authentication method. Do not automatically enable basic publishing credentials to bypass a failed authenticated deployment.</li>
+<li><strong>Ingress 403:</strong> check the managed identity's ASE-scoped write permissions rather than assuming Website Contributor is sufficient.</li>
+<li><strong>Absent metric samples:</strong> collect supported app/plan signals and log missing data; do not scale in on zero-filled gaps.</li>
+<li><strong>Load shape:</strong> front ends proxy requests. A CPU-burning endpoint primarily stresses workers; it does not isolate front-end pressure. Only load-test an environment you are authorized to test.</li>
+</ul>
+<p>The historical load run reported 126,458 HTTP 200 responses, a median latency of 0.81 seconds, and roughly 180 requests/second. The referenced sample application's status, CPU-burn, and memory-allocation endpoints and its deployment package are absent from the repository. Original screenshots, support records, and environment addresses are intentionally not distributed.</p>

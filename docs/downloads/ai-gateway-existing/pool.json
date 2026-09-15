@@ -1,0 +1,17 @@
+[
+  [
+    "/subscriptions/YOUR_SUBSCRIPTION_ID/resourceGroups/YOUR_APIM_RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/YOUR_APIM_NAME/backends/YOUR_POOL_ID",
+    {
+      "properties": {
+        "type": "Pool",
+        "description": "YOUR_OWNERSHIP_DESCRIPTION",
+        "pool": {
+          "services": [
+            {"id": "/subscriptions/YOUR_SUBSCRIPTION_ID/resourceGroups/YOUR_APIM_RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/YOUR_APIM_NAME/backends/YOUR_BACKEND_1_ID", "priority": 1, "weight": 1},
+            {"id": "/subscriptions/YOUR_SUBSCRIPTION_ID/resourceGroups/YOUR_APIM_RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/YOUR_APIM_NAME/backends/YOUR_BACKEND_2_ID", "priority": 1, "weight": 1}
+          ]
+        }
+      }
+    }
+  ]
+]

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<title>Artifact Streaming on AKS: Configure, Benchmark, and Roll Back | Azure Tech Field Notes</title>
+<meta name="description" content="Enable ACR artifact streaming for eligible Linux node pools and measure cold-start improvement without cache bias.">
+<link rel="stylesheet" href="../assets/site.css">
+<script src="../assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header"><a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">AT</span><span>Azure Tech<span class="brand-subtitle">FIELD NOTES</span></span></a><nav aria-label="Site"><a href="../index.html">All topics</a><button id="theme-toggle" type="button" aria-label="Switch color theme">Switch theme</button></nav></header>
+<main id="main" class="topic-layout">
+<aside class="toc"><details open><summary>On this page</summary><ol><li><a href="#eligibility">1. Check eligibility and exclusions</a></li><li><a href="#baseline">2. Establish a cold-pull baseline</a></li><li><a href="#registry-configuration">3. Prepare the registry artifact</a></li><li><a href="#node-pool-configuration">4. Enable a node pool and verify the profile</a></li><li><a href="#after-measurement">5. Repeat the experiment after enablement</a></li><li><a href="#rollback-cleanup">6. Roll back and remove test resources</a></li><li><a href="#references">References and source boundary</a></li><li><a href="#resources">Resources</a></li><li><a href="#editorial-notes">Editorial notes</a></li></ol></details><a class="back-link" href="../index.html">&#8592; All topics</a></aside>
+<article class="article"><header class="article-header"><p class="eyebrow">AKS / FIELD NOTE</p><h1>Artifact Streaming on AKS: Configure, Benchmark, and Roll Back</h1><p class="lead">Enable ACR artifact streaming for eligible Linux node pools and measure cold-start improvement without cache bias.</p><div class="article-meta"><span>English edition</span><span>Parameterized examples</span><span>September 2026</span></div></header>
+<aside class="editorial-note"><strong>Environment-specific evidence.</strong> Measurements and preview behavior reflect the source investigation. They are not current service guarantees. All configuration values must be supplied for your own environment.</aside>
+<div class="article-body"><p>Artifact Streaming lets an AKS node retrieve the image content needed to start a container before downloading the entire image. The benefit is most visible with large images and node scale-out or bulk Pod startup. This guide retains the source's July 2026 support snapshot: Linux AMD64 availability is described as GA, with Azure CLI 2.87.0 or later required. A locally tested 2.86.0 CLI still printed Preview warnings. Verify the current official support matrix and your installed CLI before rollout; these are documented prerequisites, not measurements performed by this site.</p><h2 id="eligibility">1. Check eligibility and exclusions</h2><table><thead><tr><th>Component</th><th>Requirement</th></tr></thead><tbody><tr><td>Azure CLI</td><td>2.87.0 or later</td></tr><tr><td>AKS</td><td>Kubernetes 1.25 or later</td></tr><tr><td>ACR</td><td>Premium SKU</td></tr><tr><td>Node operating system</td><td>Ubuntu 20.04 or later, or Azure Linux</td></tr><tr><td>Image architecture</td><td>Linux AMD64</td></tr><tr><td>Authentication</td><td>AKS–ACR integration using the kubelet identity, normally configured with --attach-acr</td></tr><tr><td>Operator permissions</td><td>Azure Kubernetes Service Contributor for node-pool configuration; registry operations require their own appropriate permissions</td></tr></tbody></table><ul><li>Windows and ARM64 images are unsupported; only the AMD64 part of a multi-architecture image is a streaming candidate.</li><li>Standard and Basic ACR tiers do not expose this feature.</li><li>The source excludes customer-managed-key encrypted registries and geo-replicated registry artifact generation/synchronization.</li><li>Pull by tag, not an image digest such as <code>image@sha256:...</code>. GitOps or Flux digest pinning prevents streaming in the documented scenario.</li><li>Pulls authenticated with <code>imagePullSecrets</code>, non-Entra scope tokens, or ACR admin credentials fall back to a normal pull. A successful pull therefore does not itself prove streaming.</li><li>Images over 30 GB are not described as technically prohibited, but the source warns that perceived gains diminish. Prefer mounted volumes for very large static data.</li></ul><p>Set the following to your own resources. Commands are Bash examples, not commands executed during publication.</p><pre><code class="language-bash">export RESOURCE_GROUP="YOUR_RESOURCE_GROUP"
+export CLUSTER="YOUR_CLUSTER"
+export LOCATION="YOUR_AZURE_REGION"
+export ACR_NAME="YOUR_ACR_NAME"
+export REPOSITORY="YOUR_REPOSITORY"
+export TAG="YOUR_IMAGE_TAG"
+export NODEPOOL="YOUR_NODEPOOL"
+
+az --version
+# Upgrade when below the required version.
+az upgrade
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" --query kubernetesVersion -o tsv
+az acr show --name "$ACR_NAME" --query sku.name -o tsv
+az aks check-acr --resource-group "$RESOURCE_GROUP" --name "$CLUSTER" --acr "$ACR_NAME.azurecr.io"
+az aks nodepool list -g "$RESOURCE_GROUP" --cluster-name "$CLUSTER" \
+  --query "[].{pool:name, osType:osType, osSKU:osSKU}" -o table
+kubectl get deployments -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{range .spec.template.spec.containers[*]}{.image}{" "}{end}{"\n"}{end}' | grep '@sha256'
+# Confirm architecture as well; the source's node-pool query does not show it.
+kubectl get nodes -L kubernetes.io/arch,kubernetes.io/os</code></pre><h2 id="baseline">2. Establish a cold-pull baseline</h2><p>Measure before enabling streaming. Use the same image and node VM size in both experiments, and use fresh nodes or nodes without the tested image. Reusing cached layers can erase or fabricate the apparent improvement. Repeat at least three times under equivalent cold-cache conditions and average the results; a single observation is sensitive to network variation.</p><h3>Create an isolated test node pool</h3><pre><code class="language-bash">az aks nodepool add -g "$RESOURCE_GROUP" --cluster-name "$CLUSTER" \
+  --name streamtest --node-count 1 --node-vm-size Standard_D4ds_v5 \
+  --mode User --os-sku Ubuntu
+# Optional isolation: only Pods with the matching toleration can run here.
+az aks nodepool update -g "$RESOURCE_GROUP" --cluster-name "$CLUSTER" \
+  --name streamtest --node-taints stream-test=true:NoSchedule</code></pre><h3>Measure submission, image pull, and readiness separately</h3><pre><code class="language-bash"># Record the timestamp BEFORE submitting the Pod.
+date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"
+kubectl run streaming-test --image="$ACR_NAME.azurecr.io/$REPOSITORY:$TAG" \
+  --overrides='{"spec":{"tolerations":[{"key":"stream-test","operator":"Equal","value":"true","effect":"NoSchedule"}],"nodeSelector":{"agentpool":"streamtest"}}}' \
+  --restart=Never -n default
+time kubectl wait --for=condition=Ready pod/streaming-test -n default --timeout=600s
+kubectl get events -n default --field-selector involvedObject.name=streaming-test \
+  --sort-by=.lastTimestamp \
+  -o custom-columns=REASON:.reason,TIME:.lastTimestamp,MESSAGE:.message
+az acr repository show --name "$ACR_NAME" --image "$REPOSITORY:$TAG" --query "imageSize" -o tsv
+kubectl delete pod streaming-test -n default</code></pre><table><thead><tr><th>Metric</th><th>How to record it</th></tr></thead><tbody><tr><td>Image pull time</td><td>Difference between Pulling and Pulled event timestamps</td></tr><tr><td>Total time to Ready</td><td>Pod submission timestamp to successful Ready completion; the duration of kubectl wait alone starts after submission and is not the complete total</td></tr><tr><td>Container start</td><td>Started event, distinct from application readiness</td></tr><tr><td>Image size</td><td>Registry-reported imageSize in bytes; convert to MB if present. If this query returns no field, inspect supported manifest metadata instead of treating a blank as zero.</td></tr><tr><td>Node conditions</td><td>VM size, pool, OS, architecture, whether the node is new, and cache state</td></tr></tbody></table><blockquote>The source records the submission timestamp after creating the Pod. The sequence above moves it before creation to avoid understating time to Ready. Event timestamps and aggregation may be coarse; preserve raw timing evidence and use consistent measurement methods.</blockquote><h2 id="registry-configuration">3. Prepare the registry artifact</h2><p>Create resources only if they do not exist. The default registry setting changes the CLI configuration for subsequent commands. Import or push an image, create its streaming artifact, and inspect referrers. Repository-level automatic artifact generation is optional.</p><pre><code class="language-bash">az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+az acr create --resource-group "$RESOURCE_GROUP" --name "$ACR_NAME" --sku Premium
+az configure --defaults acr="$ACR_NAME"
+# Skip import if the target image already exists.
+az acr import --source "docker.io/YOUR_SOURCE_REPOSITORY:YOUR_SOURCE_TAG" --image "$REPOSITORY:$TAG"
+az acr artifact-streaming create --image "$REPOSITORY:$TAG"
+# Optional: generate streaming artifacts for future images in this repository.
+az acr artifact-streaming update --name "$ACR_NAME" --repository "$REPOSITORY" --enable-streaming true
+az acr manifest list-referrers --name "$REPOSITORY:$TAG" --registry "$ACR_NAME"</code></pre><h2 id="node-pool-configuration">4. Enable a node pool and verify the profile</h2><p>Choose either new-pool creation or update of an existing pool; do not run both indiscriminately. Ensure the workload is actually scheduled onto the enabled pool.</p><pre><code class="language-bash"># New pool:
+az aks nodepool add --resource-group "$RESOURCE_GROUP" \
+  --cluster-name "$CLUSTER" --name "$NODEPOOL" --enable-artifact-streaming
+
+# OR an existing pool:
+az aks nodepool update --resource-group "$RESOURCE_GROUP" \
+  --cluster-name "$CLUSTER" --name "$NODEPOOL" --enable-artifact-streaming
+
+az aks nodepool show --resource-group "$RESOURCE_GROUP" \
+  --cluster-name "$CLUSTER" --name "$NODEPOOL" --query artifactStreamingProfile
+# Expected profile: enabled is true.</code></pre><h2 id="after-measurement">5. Repeat the experiment after enablement</h2><p>Use the identical image, VM size, timing procedure, and number of repetitions on uncached streaming-enabled nodes. If the pool has the test taint, retain its toleration as shown. Deleting only the Pod does not remove cached image layers.</p><pre><code class="language-bash">date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"
+kubectl run streaming-test-after --image="$ACR_NAME.azurecr.io/$REPOSITORY:$TAG" \
+  --overrides="{\"spec\":{\"tolerations\":[{\"key\":\"stream-test\",\"operator\":\"Equal\",\"value\":\"true\",\"effect\":\"NoSchedule\"}],\"nodeSelector\":{\"agentpool\":\"$NODEPOOL\"}}}" \
+  --restart=Never -n default
+time kubectl wait --for=condition=Ready pod/streaming-test-after -n default --timeout=600s
+kubectl get events -n default --field-selector involvedObject.name=streaming-test-after \
+  --sort-by=.lastTimestamp \
+  -o custom-columns=REASON:.reason,TIME:.lastTimestamp,MESSAGE:.message
+kubectl delete pod streaming-test-after -n default</code></pre><table><thead><tr><th>Metric</th><th>Before: average of at least three cold runs</th><th>After: average of at least three cold runs</th><th>Improvement</th></tr></thead><tbody><tr><td>Pulling to Pulled</td><td>Record measurement</td><td>Record measurement</td><td>(Before − After) / Before × 100%</td></tr><tr><td>Submission to Ready</td><td>Record measurement</td><td>Record measurement</td><td>(Before − After) / Before × 100%</td></tr></tbody></table><p>No numerical speed-up was supplied in the source: this is a benchmark template, not a claim of measured performance. Large images of hundreds of MB to several GB are more likely to show a benefit than images of only tens of MB. Recheck tag-based deployment and kubelet identity authentication before interpreting an unexpectedly small gain.</p><h2 id="rollback-cleanup">6. Roll back and remove test resources</h2><pre><code class="language-bash">az aks nodepool update --resource-group "$RESOURCE_GROUP" \
+  --cluster-name "$CLUSTER" --name "$NODEPOOL" --disable-artifact-streaming
+# Optional and destructive: remove only the dedicated test pool after confirming it has no needed workloads.
+az aks nodepool delete -g "$RESOURCE_GROUP" --cluster-name "$CLUSTER" --name streamtest --no-wait</code></pre><p>Disabling the node-pool feature is the documented rollback. This is separate from removing registry referrers or changing repository automatic-generation settings; the source does not provide a registry cleanup procedure.</p><h2 id="references">References and source boundary</h2><ul><li><a href="https://learn.microsoft.com/en-us/azure/aks/artifact-streaming">Artifact Streaming on AKS</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/artifact-streaming-overview">Artifact Streaming overview</a></li><li><a href="https://aka.ms/aks/artifact-streaming">GA announcement</a></li><li><a href="https://github.com/Azure/AKS/issues/3928">Public AKS roadmap issue 3928</a></li></ul><p>The article preserves the source's feature restrictions and version requirements. Reconfirm them against the service and CLI version you deploy; no Azure resources or source commands were run to verify this publication.</p><h2 id="resources">Resources</h2><p>No standalone companion files are distributed for this topic. Use the in-page examples and review the editorial notes below for source availability.</p><h2 id="editorial-notes">Editorial notes</h2><p>This page consolidates the following source documents into an English technical guide:</p><ul><li>AKS Artifact Streaming (Linux) Deployment Guide</li></ul><ul><li>Private environment identifiers are replaced with input variables; no original environment values or private source links are published.</li><li>The repository root README is only an index and adds no technical procedure.</li><li>No standalone YAML resource exists in this source folder, so no download has been invented.</li></ul><p>No original credentials or private repository links are included. Do not put populated configuration files or copied production outputs back into this public site.</p></div>
+</article></main>
+<footer><span>Azure Tech Field Notes</span><span>Independent technical notes. Not an official Microsoft publication.</span><span>English edition &middot; September 2026</span></footer>
+<div class="sr-only" id="status" role="status" aria-live="polite"></div>
+</body></html>

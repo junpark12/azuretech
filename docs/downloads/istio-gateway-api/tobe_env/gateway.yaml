@@ -1,0 +1,33 @@
+# REFERENCE ONLY: historical target, not a ready-to-apply private ingress configuration.
+# Metadata annotations may NOT propagate to the generated Service, creating a PUBLIC LB.
+# Before applying, move LB annotations to spec.infrastructure.annotations as shown in the guide.
+# This HTTP baseline does not reproduce all legacy NGINX annotations.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo-istio-gw
+  namespace: demo
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    # Optional: set an available address from YOUR ingress subnet before uncommenting.
+    # service.beta.kubernetes.io/azure-load-balancer-ipv4: "YOUR_PRIVATE_LB_IP"
+spec:
+  gatewayClassName: approuting-istio
+  listeners:
+  - hostname: echo.example.com
+    name: http
+    protocol: HTTP
+    port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: echo-route
+  namespace: demo
+spec:
+  parentRefs:
+  - name: demo-istio-gw
+  rules:
+  - backendRefs:
+    - name: echo
+      port: 80

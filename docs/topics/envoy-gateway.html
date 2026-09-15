@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<title>Self-Managed Envoy Gateway on AKS and NGINX Migration | Azure Tech Field Notes</title>
+<meta name="description" content="Deploy an internal Envoy Gateway with independent data planes, safe draining, and explicit replacements for NGINX routing features.">
+<link rel="stylesheet" href="../assets/site.css">
+<script src="../assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header"><a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">AT</span><span>Azure Tech<span class="brand-subtitle">FIELD NOTES</span></span></a><nav aria-label="Site"><a href="../index.html">All topics</a><button id="theme-toggle" type="button" aria-label="Switch color theme">Switch theme</button></nav></header>
+<main id="main" class="topic-layout">
+<aside class="toc"><details open><summary>On this page</summary><ol><li><a href="#architecture">1. Architecture, ownership, and trade-offs</a></li><li><a href="#cluster">2. Create an isolated AKS lab</a></li><li><a href="#control-plane">3. Install and verify the control plane</a></li><li><a href="#private-gateway">4. Configure an internal Gateway with draining and autoscaling</a></li><li><a href="#first-app">5. Deploy a test application and route</a></li><li><a href="#second-team">6. Prove isolation with a second namespace</a></li><li><a href="#topology">7. Independent versus shared gateways</a></li><li><a href="#application-gateway">8. Put Application Gateway in front of the private proxy</a></li><li><a href="#migration-map">9. Map NGINX features explicitly</a></li><li><a href="#dns">10. Replace managed DNS automation deliberately</a></li><li><a href="#cutover">11. Migration validation and safe cutover</a></li><li><a href="#references">References and source limits</a></li><li><a href="#resources">Resources</a></li><li><a href="#editorial-notes">Editorial notes</a></li></ol></details><a class="back-link" href="../index.html">&#8592; All topics</a></aside>
+<article class="article"><header class="article-header"><p class="eyebrow">AKS / FIELD NOTE</p><h1>Self-Managed Envoy Gateway on AKS and NGINX Migration</h1><p class="lead">Deploy an internal Envoy Gateway with independent data planes, safe draining, and explicit replacements for NGINX routing features.</p><div class="article-meta"><span>English edition</span><span>Parameterized examples</span><span>September 2026</span></div></header>
+<aside class="editorial-note"><strong>Environment-specific evidence.</strong> Measurements and preview behavior reflect the source investigation. They are not current service guarantees. All configuration values must be supplied for your own environment.</aside>
+<div class="article-body"><p>This guide combines installation and Application Routing NGINX migration into one self-managed Envoy Gateway runbook. It is distinct from the AKS-managed, Istio-based Application Routing implementation. The source uses Envoy Gateway v1.7.0 and an illustrative v1.8.0 upgrade. It cites March 2026 upstream Ingress NGINX retirement and Microsoft support for the NGINX Application Routing add-on through November 2026. Verify lifecycle and release information before choosing a migration deadline.</p><h2 id="architecture">1. Architecture, ownership, and trade-offs</h2><p>Helm installs the control plane, which reconciles configuration but does not serve application traffic. Creating a Gateway provisions an Envoy data-plane Deployment, a dedicated LoadBalancer Service, and an HPA when configured. The resource chain is <code>EnvoyProxy → GatewayClass → Gateway → HTTPRoute</code>.</p><table><thead><tr><th>Resource</th><th>Purpose</th><th>Ownership in this example</th></tr></thead><tbody><tr><td>EnvoyProxy</td><td>Provider-specific Service, deployment, autoscaling and draining settings</td><td>Platform team, envoy-gateway-system</td></tr><tr><td>GatewayClass</td><td>Cluster-scoped reusable infrastructure pattern; references EnvoyProxy</td><td>Platform team</td></tr><tr><td>Gateway</td><td>Concrete listeners and an independent data plane</td><td>Application namespace, under platform governance</td></tr><tr><td>HTTPRoute</td><td>Host/path matching, filters and backend references</td><td>Application team</td></tr></tbody></table><ul><li>Benefits: Gateway API's separation of responsibilities, Envoy's established proxy implementation, independently scalable tenant gateways, and public, private, or Private Link Service deployment patterns.</li><li>Costs: the operator owns Helm upgrades, security patches, CRDs, monitoring and incident response. New concepts include EnvoyProxy, GatewayClass, Gateway, HTTPRoute and policy CRDs.</li><li>Compatibility is not guaranteed merely by choosing Gateway API. Check the implementation/version feature matrix, especially policy extensions and converted annotations.</li><li>The source describes an interim move to the managed NGINX add-on and a longer-term Envoy strategy. That is a planning pattern, not an assertion that self-managed Envoy is the only Microsoft-supported destination.</li></ul><h2 id="cluster">2. Create an isolated AKS lab</h2><pre><code class="language-bash">RESOURCE_GROUP="YOUR_RESOURCE_GROUP"
+CLUSTER_NAME="YOUR_CLUSTER"
+LOCATION="eastus"
+VM_SKU="Standard_D2a_v4"
+NODE_COUNT=2
+az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+az aks create --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" \
+  --location "$LOCATION" --node-count "$NODE_COUNT" --node-vm-size "$VM_SKU" \
+  --network-plugin azure --network-plugin-mode overlay \
+  --generate-ssh-keys --enable-managed-identity
+az aks get-credentials --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" --overwrite-existing
+kubectl get nodes
+kubectl cluster-info</code></pre><p>The source baseline is two Standard_D2a_v4 nodes (2 vCPU, 8 GB RAM), a system pool without a taint, Azure CNI Overlay and managed identity. No Kubernetes version is pinned, so the service chooses an available default; production should select and validate a supported version deliberately. Importing credentials with overwrite-existing changes the local kubeconfig entry.</p><h2 id="control-plane">3. Install and verify the control plane</h2><pre><code class="language-bash">EG_VERSION="v1.7.0"
+helm install eg oci://docker.io/envoyproxy/gateway-helm \
+  --version "$EG_VERSION" -n envoy-gateway-system --create-namespace \
+  --set podDisruptionBudget.minAvailable=1 \
+  --set deployment.replicas=2 \
+  --set deployment.envoyGateway.resources.requests.cpu=125m \
+  --set deployment.envoyGateway.resources.requests.memory=128Mi \
+  --set deployment.envoyGateway.resources.limits.cpu=500m \
+  --set deployment.envoyGateway.resources.limits.memory=512Mi
+kubectl wait deployment envoy-gateway -n envoy-gateway-system \
+  --for=condition=Available=True --timeout=5m
+kubectl get pods -n envoy-gateway-system</code></pre><p>The example uses two fixed control-plane replicas with PDB minAvailable=1, CPU request/limit 125m/500m and memory request/limit 128Mi/512Mi. It does not configure control-plane HPA because application traffic is handled elsewhere. This is the source's sizing baseline, not a universal capacity recommendation.</p><h3>Upgrade CRDs before the controller</h3><blockquote>Helm does not automatically upgrade chart CRDs. Back up existing resources, read release and schema migration notes, and update CRDs before upgrading the controller. Never delete a CRD simply because one of its served API versions was deprecated: deleting the CRD deletes all instances.</blockquote><pre><code class="language-bash"># Illustrative upgrade; confirm the target release exists and supports your cluster.
+helm pull oci://docker.io/envoyproxy/gateway-helm --version v1.8.0 --untar
+kubectl apply -f gateway-helm/crds/
+kubectl get crd | grep -E "gateway|envoy"
+helm upgrade eg oci://docker.io/envoyproxy/gateway-helm \
+  --version v1.8.0 -n envoy-gateway-system \
+  --set podDisruptionBudget.minAvailable=1 \
+  --set deployment.replicas=2 \
+  --set deployment.envoyGateway.resources.requests.cpu=125m \
+  --set deployment.envoyGateway.resources.requests.memory=128Mi \
+  --set deployment.envoyGateway.resources.limits.cpu=500m \
+  --set deployment.envoyGateway.resources.limits.memory=512Mi
+kubectl wait deployment envoy-gateway -n envoy-gateway-system \
+  --for=condition=Available=True --timeout=5m
+kubectl get pods -n envoy-gateway-system
+# Remove only the chart directory downloaded for this operation, if no longer needed.
+rm -r gateway-helm</code></pre><p><code>kubectl apply</code> does not remove obsolete CRDs. Inventory deprecated resources and follow the release-specific migration process. The source mentions GRPCRoute/ReferenceGrant v1alpha2 removals around v1.2.0; treat this as a reminder to inspect served/storage versions, not as a safe blanket CRD-deletion command. The upgrade above explicitly preserves two replicas, correcting an omission in the source's otherwise equivalent Helm options.</p><h2 id="private-gateway">4. Configure an internal Gateway with draining and autoscaling</h2><p>Apply these three resources in order. The EnvoyProxy lives in the infrastructure namespace; the Gateway lives in default. For this deployment model the generated data-plane Pods and Services are in envoy-gateway-system.</p><pre><code class="language-yaml">apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: internal-proxy
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: LoadBalancer
+        annotations:
+          service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+      envoyDeployment:
+        replicas: 2
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  terminationGracePeriodSeconds: 300
+      envoyHpa:
+        minReplicas: 2
+        maxReplicas: 10
+        metrics:
+        - type: Resource
+          resource:
+            name: cpu
+            target:
+              type: Utilization
+              averageUtilization: 80
+  shutdown:
+    drainTimeout: 120s
+    minDrainDuration: 5s
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg-private
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: internal-proxy
+    namespace: envoy-gateway-system
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg-private
+  namespace: default
+spec:
+  gatewayClassName: eg-private
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80</code></pre><pre><code class="language-bash">kubectl get envoyproxy -n envoy-gateway-system
+kubectl get gatewayclass
+kubectl get gateway
+kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-private</code></pre><h3>Why all three shutdown settings matter</h3><table><thead><tr><th>Setting</th><th>Example</th><th>Meaning</th></tr></thead><tbody><tr><td>minDrainDuration</td><td>5s</td><td>Minimum wait even if connections finish sooner; allows endpoint-removal propagation</td></tr><tr><td>drainTimeout</td><td>120s</td><td>Maximum drain period for existing requests before remaining connections close</td></tr><tr><td>terminationGracePeriodSeconds</td><td>300</td><td>Kubernetes' outer termination allowance before forced SIGKILL</td></tr></tbody></table><p>After SIGTERM, Envoy waits at least the minimum drain interval and up to the drain timeout for requests to finish. Kubernetes' grace period must exceed the drain timeout so that the proxy is not killed first. Without suitable draining, rolling updates can terminate active requests and surface 502s. Long-running uploads and WebSockets need workload-specific settings; no timeout guarantees zero loss.</p><p>The built-in envoyHpa produces an independent HPA per Gateway with min 2, max 10 and CPU utilization target 80%; a separate HPA manifest is unnecessary. Platform teams can offer several EnvoyProxy/GatewayClass chains: an API pattern with 30s drain/60s grace, a streaming pattern with 120s/300s, and an upload pattern with 180s/600s. Application teams select the class rather than changing shared infrastructure.</p><h2 id="first-app">5. Deploy a test application and route</h2><pre><code class="language-yaml">apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aks-helloworld
+  namespace: default
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aks-helloworld
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+  selector: {app: aks-helloworld}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aks-helloworld
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: aks-helloworld}
+  template:
+    metadata:
+      labels: {app: aks-helloworld}
+    spec:
+      serviceAccountName: aks-helloworld
+      containers:
+      - name: aks-helloworld
+        image: mcr.microsoft.com/azuredocs/aks-helloworld:v1
+        ports:
+        - containerPort: 80
+        env:
+        - name: TITLE
+          value: "Envoy Gateway on AKS"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: aks-helloworld
+  namespace: default
+spec:
+  parentRefs:
+  - name: eg-private
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /}
+    backendRefs:
+    - name: aks-helloworld
+      port: 80</code></pre><pre><code class="language-bash">kubectl wait --timeout=60s --for=condition=available deployment/aks-helloworld
+kubectl get pods -l app=aks-helloworld
+GATEWAY_IP=$(kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-private \
+  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
+kubectl run curl-test --rm -it --restart=Never --image=curlimages/curl -- curl -s "http://$GATEWAY_IP/"
+
+# Alternative for local browser testing: discover the Service rather than reconstructing its generated name.
+SERVICE_NAME=$(kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-private \
+  -o jsonpath='{.items[0].metadata.name}')
+kubectl port-forward -n envoy-gateway-system "svc/$SERVICE_NAME" 8080:80
+# Browse http://localhost:8080 while the forward is active.</code></pre><p>An internal LoadBalancer is reachable from connected private networks, not directly from the Internet. Use a same-VNet VM, a VPN-connected client, a VM reached through Bastion, or the test Pod. Traffic flows from the private client through Azure Internal LoadBalancer, Envoy data plane, HTTPRoute, ClusterIP Service and application Pod.</p><pre><code class="language-bash">kubectl get gateway
+kubectl get httproute
+kubectl get pods,svc -n envoy-gateway-system</code></pre><h2 id="second-team">6. Prove isolation with a second namespace</h2><p>Create namespace team-b. Duplicate the preceding ServiceAccount, Service and Deployment with namespace <code>team-b</code>, name and app label <code>aks-helloworld-b</code>, matching serviceAccountName and selectors, and TITLE <code>Team-B App on Envoy Gateway</code>. Keep two replicas, the same image and port 80. These exact substitutions reproduce the source's second full application block without changing its behavior.</p><pre><code class="language-bash">kubectl create namespace team-b
+# Apply the second application's resources with the substitutions above.
+kubectl wait --timeout=60s --for=condition=available deployment/aks-helloworld-b -n team-b</code></pre><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg-private-team-b
+  namespace: team-b
+spec:
+  gatewayClassName: eg-private
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: aks-helloworld-b
+  namespace: team-b
+spec:
+  parentRefs:
+  - name: eg-private-team-b
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /}
+    backendRefs:
+    - name: aks-helloworld-b
+      port: 80</code></pre><pre><code class="language-bash">kubectl get pods -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-namespace
+kubectl get gateway -A
+kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name
+kubectl get hpa -n envoy-gateway-system
+GATEWAY_IP_B=$(kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-private-team-b \
+  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
+kubectl run curl-test-b --rm -it --restart=Never \
+  --image=curlimages/curl -- curl -s "http://$GATEWAY_IP_B/"</code></pre><p>Expected: the original two data-plane Pods remain, two team-b data-plane Pods appear, and the two control-plane replicas remain unchanged. There are two private LoadBalancer addresses and two independently scaling HPAs, each min 2/max 10. Sharing a GatewayClass shares a template, not the actual proxy instances.</p><h2 id="topology">7. Independent versus shared gateways</h2><table><thead><tr><th>Strategy</th><th>Resources</th><th>Trade-off</th></tr></thead><tbody><tr><td>One Gateway per team</td><td>One private IP, Deployment and HPA per team</td><td>Better traffic, scaling and failure isolation; greater baseline cost</td></tr><tr><td>One shared Gateway</td><td>One private IP and shared 2–10 data-plane Pods; team routes split by host/path</td><td>Lower cost and a single entry point; shared capacity and failure domain</td></tr></tbody></table><p>For a shared Gateway, label only approved namespaces and allow them through the listener. Routes in those namespaces must include the Gateway namespace in parentRefs. This is an attachment permission; network policies still control packet flow.</p><pre><code class="language-yaml">listeners:
+- name: http
+  protocol: HTTP
+  port: 80
+  allowedRoutes:
+    namespaces:
+      from: Selector
+      selector:
+        matchLabels:
+          shared-gateway: "true"</code></pre><h2 id="application-gateway">8. Put Application Gateway in front of the private proxy</h2><p>A public Application Gateway can terminate TLS for illustrative domain <code>api.contoso.com</code>, forward HTTP to the Envoy private LB address, and let HTTPRoute select backends by Host and path. DNS then points to Application Gateway's public IP; Envoy itself matches the HTTP Host header, not DNS ownership.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api-route
+  namespace: default
+spec:
+  hostnames: [api.contoso.com]
+  parentRefs:
+  - name: eg-private
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /api/users}
+    backendRefs:
+    - name: user-service
+      port: 80
+  - matches:
+    - path: {type: PathPrefix, value: /api/orders}
+    backendRefs:
+    - name: order-service
+      port: 80</code></pre><table><thead><tr><th>Application Gateway setting</th><th>Required choice</th></tr></thead><tbody><tr><td>Backend pool</td><td>Envoy private LoadBalancer IP with VNet reachability</td></tr><tr><td>Backend hostname override</td><td>Off when relying on the original api.contoso.com Host</td></tr><tr><td>Health probe</td><td>A reachable backend path and appropriate Host that actually matches the route</td></tr></tbody></table><blockquote>Unexpected Host rewriting breaks hostname matching. Verify both client requests and probes. HTTP between Application Gateway and Envoy is the source's offload pattern, not end-to-end encryption; choose backend TLS if your security requirements require it.</blockquote><h2 id="migration-map">9. Map NGINX features explicitly</h2><table><thead><tr><th>NGINX/App Routing feature</th><th>Envoy/Gateway API destination</th></tr></thead><tbody><tr><td>Ingress plus annotations</td><td>Gateway + HTTPRoute plus provider-specific policies</td></tr><tr><td>Key Vault TLS Secret</td><td>CSI synchronization plus HTTPS listener certificateRefs, if Envoy terminates TLS</td></tr><tr><td>Host / path</td><td>HTTPRoute hostnames / matches.path</td></tr><tr><td>rewrite-target</td><td>URLRewrite filter</td></tr><tr><td>ssl-redirect</td><td>RequestRedirect filter attached only to the HTTP listener</td></tr><tr><td>limit-rps / timeouts</td><td>BackendTrafficPolicy; semantics require review</td></tr><tr><td>CORS / source ranges</td><td>SecurityPolicy, subject to installed CRD support</td></tr><tr><td>Automatic DNS</td><td>Separately operated external-dns, or manage DNS at the fronting Application Gateway</td></tr><tr><td>Lifecycle</td><td>Administrator-managed Helm installation, not Azure-managed add-on updates</td></tr></tbody></table><h3>TLS: choose the termination point</h3><p>For direct exposure, reuse the Key Vault → SecretProviderClass/CSI → Kubernetes TLS Secret pipeline and reference the Secret from the Gateway's namespace. For Application Gateway offload, manage the certificate on Application Gateway (optionally backed by Key Vault) and retain an HTTP-only Envoy listener. Do not deploy an unused CSI pipeline merely because the previous NGINX used one.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg-private
+  namespace: default
+spec:
+  gatewayClassName: eg-private
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: keyvault-api-contoso-com</code></pre><p>The Secret name is illustrative; it must already exist and contain a matching certificate/private key. The source does not supply a complete Envoy CSI or identity setup. A cross-namespace certificate reference additionally needs a supported ReferenceGrant.</p><h3>Rewrite /api to the backend root</h3><p>The original NGINX pattern used <code>/api(/|$)(.*)</code> and <code>rewrite-target: /$2</code>. The standard prefix rewrite below removes /api without copying NGINX regex syntax.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api-rewrite
+  namespace: default
+spec:
+  parentRefs:
+  - name: eg-private
+  hostnames: [api.contoso.com]
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /api}
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+    backendRefs:
+    - name: api-service
+      port: 80</code></pre><h3>HTTP to HTTPS redirect</h3><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-redirect
+  namespace: default
+spec:
+  parentRefs:
+  - name: eg-private
+    sectionName: http
+  rules:
+  - filters:
+    - type: RequestRedirect
+      requestRedirect:
+        scheme: https
+        statusCode: 301</code></pre><p>Attach application HTTPS routes to <code>sectionName: https</code> and ensure the HTTPS listener and certificate work before enabling redirects. Avoid applying this direct-Envoy pattern blindly behind an HTTP-offloading frontend, where redirection can loop.</p><h3>Timeout policy</h3><p>The source maps NGINX read/send timeouts of 120 seconds and connect timeout of 10 seconds to the following policy. This is not a one-to-one equivalence: a connection idle timeout and overall request timeout do not configure a ten-second upstream connect timeout.</p><pre><code class="language-yaml">apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: api-timeout
+  namespace: default
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: api-route
+  timeout:
+    http:
+      connectionIdleTimeout: 120s
+      requestTimeout: 120s</code></pre><h3>Local rate limiting</h3><pre><code class="language-yaml">apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: api-ratelimit
+  namespace: default
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: api-route
+  rateLimit:
+    type: Local
+    local:
+      rules:
+      - limit:
+          requests: 10
+          unit: Second</code></pre><p>The NGINX source used 10 requests/second with burst multiplier 5. This local policy does not preserve that burst or imply a cluster-wide aggregate limit; validate per-proxy behavior under scaling and decide whether global limiting is required. The timeout and rate-limit examples are alternatives illustrating individual features; combine compatible fields into a deliberate policy rather than assuming multiple same-target policies merge.</p><h3>Source-IP authorization</h3><pre><code class="language-yaml">apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: ip-whitelist
+  namespace: default
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: eg-private
+  authorization:
+    defaultAction: Deny
+    rules:
+    - action: Allow
+      principal:
+        clientCIDRs:
+        - "10.0.0.0/8"
+        - "172.16.0.0/12"</code></pre><p>These are illustrative RFC1918 ranges, not an approved production allowlist. When another proxy fronts Envoy, establish which IP is considered the client and how forwarded headers are trusted before relying on this policy. CORS is mapped to SecurityPolicy in the source, but no full CORS policy is provided there; inspect the installed schema and test preflight, credentials, origins and response headers rather than assuming the NGINX annotations carry over.</p><h2 id="dns">10. Replace managed DNS automation deliberately</h2><p>The NGINX add-on supplied external-dns integration through attached Azure DNS zones. Self-managed Envoy does not. The source's illustrative Helm command is:</p><pre><code class="language-bash"># Configuration fragment only: configure the chart repository, compatible chart version,
+# Azure authentication, zone/domain scoping and ownership before running.
+helm install external-dns bitnami/external-dns \
+  --set provider=azure \
+  --set azure.resourceGroup="YOUR_DNS_ZONE_RESOURCE_GROUP" \
+  --set policy=sync \
+  --set 'sources[0]=gateway-httproute' \
+  --set 'sources[1]=gateway-grpcroute'</code></pre><blockquote>This is not a complete external-dns installation. Chart values differ across versions; the source omits identity and DNS permissions. The sync policy can delete records. Scope domains and zones, configure ownership, and ensure two controllers do not reconcile the same records during migration.</blockquote><p>If Application Gateway is the public entry point, DNS may instead be managed manually or directly in Azure DNS as <code>api.contoso.com → Application Gateway public IP</code>. Keep the Host unchanged on the backend leg; no external-dns instance is required solely to make Envoy match that hostname.</p><h2 id="cutover">11. Migration validation and safe cutover</h2><ol><li>Inventory Ingress hosts, paths, TLS references, rewrites, redirects, timeouts, limits, CORS, DNS ownership and source-IP controls.</li><li>Use <a href="https://github.com/kubernetes-sigs/ingress2gateway">ingress2gateway</a> to assist conversion, but manually review every generated resource and unsupported annotation.</li><li>Deploy the new controller and parallel private Gateway without changing the existing entry point. Verify Gateway and HTTPRoute conditions, backend reachability, probes and certificate trust.</li><li>Exercise host/path routing, slash boundaries, redirects, large requests, long-lived connections, timeouts, rate limits and source-IP authorization. Validate rolling-update draining and independent HPA behavior.</li><li>Plan DNS or Application Gateway backend changes with a rollback to the old entry point. Retain the old controller and resources until production behavior is validated; migrate before the applicable NGINX support deadline.</li><li>Transfer DNS/certificate responsibility explicitly, then retire unused resources only after confirming they no longer serve traffic.</li></ol><h2 id="references">References and source limits</h2><ul><li><a href="https://pixelrobots.co.uk/2026/02/installing-envoy-gateway-on-aks-three-ways-to-configure-your-gateway/">Installing Envoy Gateway on AKS: three deployment patterns</a></li><li><a href="https://gateway.envoyproxy.io/news/releases/notes">Envoy Gateway release notes</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing">AKS Application Routing</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing-nginx-configuration">NGINX configuration</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing-dns-ssl">NGINX DNS and TLS integration</a></li><li><a href="https://blog.aks.azure.com/2025/11/13/ingress-nginx-update">Ingress NGINX retirement update</a></li></ul><p>The source fully demonstrates the private-LB pattern, not public LB or Private Link Service manifests. It does not supply backend Services for the illustrative user/order/API routes, a complete external-dns identity configuration, or production performance tests. Version-pinned examples are retained as documented baselines, not represented as today's latest releases.</p><h2 id="resources">Resources</h2><p>No standalone companion files are distributed for this topic. Use the in-page examples and review the editorial notes below for source availability.</p><h2 id="editorial-notes">Editorial notes</h2><p>This page consolidates the following source documents into an English technical guide:</p><ul><li>Installing Envoy Gateway on AKS</li><li>Migrating Application Routing NGINX to Envoy Gateway</li></ul><ul><li>Environment-specific cluster and resource-group names are replaced with variables; private addresses and source links are not published.</li><li>The second hello-world application&#39;s repeated manifest is consolidated into exact name, namespace, label, ServiceAccount and title substitutions; its Gateway, route and validation remain explicit.</li><li>No standalone resource files exist in the source folder; inline examples have not been misrepresented as source downloads.</li></ul><p>No original credentials or private repository links are included. Do not put populated configuration files or copied production outputs back into this public site.</p></div>
+</article></main>
+<footer><span>Azure Tech Field Notes</span><span>Independent technical notes. Not an official Microsoft publication.</span><span>English edition &middot; September 2026</span></footer>
+<div class="sr-only" id="status" role="status" aria-live="polite"></div>
+</body></html>
