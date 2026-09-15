@@ -141,6 +141,34 @@ pre { padding: 24px; margin: 24px 0; border: 1px solid var(--cp-border); border-
 .download-list a { font-weight: 600; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 [hidden] { display: none !important; }
+.topic-illustration { margin: -28px -28px 24px; padding: 4px 8px; border-bottom: 1px solid var(--cp-border); border-radius: 16px 16px 0 0; background: var(--cp-bg-elevated); overflow: hidden; }
+.topic-illustration svg { display: block; width: 100%; height: auto; }
+.topic-illustration .diagram-kicker, .topic-illustration .diagram-edge-label, .topic-illustration .diagram-node-detail { display: none; }
+.topic-illustration .diagram-node-title { display: none; }
+.topic-illustration .diagram-node > g { transform: translate(66px, 22px) scale(1.2); }
+.technical-visual { margin: 36px 0; background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); border-radius: 16px; overflow: hidden; }
+.visual-heading { padding: 24px 24px 0; }
+.visual-heading .eyebrow { margin-bottom: 12px; }
+.visual-heading h2, .visual-heading h3 { margin: 0; padding: 0; border: 0; font-size: 23px; line-height: 1.35; }
+.visual-heading p { margin: 8px 0 0; color: var(--cp-text-muted); font-size: 12px; }
+.visual-canvas { overflow-x: auto; padding: 8px 12px; }
+.visual-canvas svg { display: block; width: 100%; min-width: 620px; height: auto; }
+.technical-visual figcaption { border-top: 1px solid var(--cp-border); margin: 0; padding: 16px 24px; color: var(--cp-text-muted); font-size: 12px; line-height: 1.8; background: var(--cp-surface); }
+.diagram-node rect { fill: var(--cp-surface); stroke: var(--cp-border-strong); stroke-width: 1; }
+.diagram-accent rect { fill: var(--cp-accent-soft); stroke: var(--cp-accent); stroke-width: 1.5; }
+.diagram-icon { fill: none; stroke: var(--cp-accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.diagram-node-title { fill: var(--cp-text); font-size: 13px; font-weight: 650; }
+.diagram-node-detail { fill: var(--cp-text-muted); font-size: 10px; }
+.diagram-edge { fill: none; stroke: var(--cp-accent); stroke-width: 1.5; stroke-linejoin: round; }
+.diagram-arrow { fill: var(--cp-accent); }
+.diagram-dashed { stroke-dasharray: 5 5; stroke: var(--cp-text-soft); }
+.diagram-edge-label { fill: var(--cp-text-muted); font-size: 10px; text-anchor: middle; }
+.diagram-guide, .chart-grid { fill: none; stroke: var(--cp-border); stroke-width: 1; }
+.diagram-kicker { fill: var(--cp-text-soft); font-size: 9px; letter-spacing: 1.6px; }
+.chart-tick { fill: var(--cp-text-soft); font-size: 11px; text-anchor: middle; }
+.chart-label { fill: var(--cp-text); font-size: 13px; text-anchor: end; }
+.chart-value { fill: var(--cp-text); font-size: 13px; font-weight: 650; }
+.chart-bar { fill: var(--cp-accent); }
 @media (max-width: 1060px) {
   .topic-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topic-layout { grid-template-columns: 200px minmax(0, 1fr); gap: 32px; }
@@ -162,6 +190,10 @@ pre { padding: 24px; margin: 24px 0; border: 1px solid var(--cp-border); border-
   .section-heading h2 { font-size: 25px; }
   .topic-grid, .about-grid { grid-template-columns: 1fr; }
   .topic-card { padding: 24px; }
+  .topic-illustration { margin: -24px -24px 24px; }
+  .visual-heading { padding: 20px 20px 0; }
+  .visual-heading h2, .visual-heading h3 { font-size: 21px; }
+  .technical-visual figcaption { padding: 16px 20px; }
   .about-grid { gap: 20px; margin: 48px 0; }
   .topic-layout { display: block; padding: 24px 20px 48px; }
   .toc { position: static; max-height: none; padding: 16px; border: 1px solid var(--cp-border); border-radius: 0.625rem; margin-bottom: 32px; }

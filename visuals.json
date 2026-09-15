@@ -1,0 +1,142 @@
+{
+  "ai-gateway": {
+    "title": "One entry point for models and tools",
+    "caption": "Conceptual request path. Gateway policies govern access; model inference and MCP tool execution remain separate operations.",
+    "nodes": [
+      {"x":24,"y":72,"title":"Application","detail":"SDK / HTTP client","icon":"client"},
+      {"x":275,"y":72,"title":"AI Gateway","detail":"Access + policies","icon":"gateway","accent":true},
+      {"x":526,"y":72,"title":"Foundry model","detail":"Inference provider","icon":"model"},
+      {"x":275,"y":232,"title":"Token monitoring","detail":"Usage by access key","icon":"chart"},
+      {"x":526,"y":232,"title":"MCP tool server","detail":"Approved tool calls","icon":"tools"}
+    ],
+    "edges":[{"d":"M194 112 H275","x":234,"y":100,"label":"request"},{"d":"M445 112 H526","x":484,"y":100,"label":"inference"},{"d":"M360 152 V232","x":403,"y":195,"label":"telemetry"},{"d":"M445 132 H488 V272 H526","x":512,"y":195,"label":"tools"}]
+  },
+  "ai-gateway-existing": {
+    "title": "Route through APIM, authenticate with identity",
+    "caption": "Equal-priority backend-pool concept. Bounded retries handle eligible HTTP 429 responses; this is not a guarantee against mid-stream failures.",
+    "nodes":[
+      {"x":24,"y":72,"title":"Client","detail":"APIM subscription key","icon":"client"},
+      {"x":275,"y":72,"title":"APIM","detail":"Policy + backend pool","icon":"gateway","accent":true},
+      {"x":526,"y":72,"title":"Foundry A","detail":"Managed identity auth","icon":"model"},
+      {"x":275,"y":232,"title":"Application Insights","detail":"Metadata diagnostics","icon":"chart"},
+      {"x":526,"y":232,"title":"Foundry B","detail":"Managed identity auth","icon":"model"}
+    ],
+    "edges":[{"d":"M194 112 H275","x":234,"y":100,"label":"HTTPS"},{"d":"M445 112 H526","x":484,"y":100,"label":"route"},{"d":"M445 132 H484 V272 H526","x":511,"y":195,"label":"route"},{"d":"M360 152 V232","x":402,"y":195,"label":"trace"}]
+  },
+  "codex": {
+    "title": "Capacity routing is not streaming recovery",
+    "caption": "Illustrative APIM-mediated path from the guide. PTU/PAYG routing is one design option, not the only Codex-to-Foundry connection method.",
+    "nodes":[
+      {"x":24,"y":72,"title":"Codex CLI","detail":"Responses API client","icon":"client"},
+      {"x":275,"y":72,"title":"APIM routing","detail":"Policy + retry boundary","icon":"gateway","accent":true},
+      {"x":526,"y":72,"title":"Provisioned model","detail":"PTU capacity","icon":"model"},
+      {"x":24,"y":232,"title":"Client recovery","detail":"Handle stream errors","icon":"tools"},
+      {"x":526,"y":232,"title":"Standard model","detail":"PAYG capacity","icon":"model"}
+    ],
+    "edges":[{"d":"M194 112 H275","x":234,"y":100,"label":"request"},{"d":"M445 112 H526","x":484,"y":100,"label":"primary"},{"d":"M445 132 H484 V272 H526","x":512,"y":195,"label":"fallback"},{"d":"M109 152 V232","x":151,"y":195,"label":"recover"}]
+  },
+  "translation-performance": {
+    "title": "Measure the same workload, not just the model",
+    "caption": "The benchmark compares eight translation scenarios. Total response duration, first-token delay, and output length describe different aspects of performance.",
+    "nodes":[
+      {"x":24,"y":72,"title":"Eight scenarios","detail":"Shared translation tasks","icon":"client"},
+      {"x":275,"y":72,"title":"Six models","detail":"Recorded configurations","icon":"model","accent":true},
+      {"x":526,"y":72,"title":"Response timing","detail":"End-to-end duration","icon":"chart"},
+      {"x":275,"y":232,"title":"Output length","detail":"Token count differs","icon":"tools"},
+      {"x":526,"y":232,"title":"Compare results","detail":"Latency is not quality","icon":"chart"}
+    ],
+    "edges":[{"d":"M194 112 H275","x":234,"y":100,"label":"same tasks"},{"d":"M445 112 H526","x":484,"y":100,"label":"measure"},{"d":"M360 152 V232","x":399,"y":195,"label":"record"},{"d":"M611 152 V232","x":651,"y":195,"label":"interpret"},{"d":"M445 272 H526","x":484,"y":260,"label":"context"}],
+    "chart": {
+      "after":"round-two-results",
+      "title":"Mean translation response duration",
+      "subtitle":"April 2026 benchmark / eight scenarios / lower is faster",
+      "unit":"ms",
+      "max":4500,
+      "ticks":[0,1500,3000,4500],
+      "rows":[{"label":"GPT-4o-mini","value":924},{"label":"GPT-5.4-mini","value":1195},{"label":"GPT-4o","value":1249},{"label":"GPT-4.1","value":1756},{"label":"GPT-5.4-nano","value":1831},{"label":"GPT-5","value":4324}],
+      "caption":"Source: Round 2 mean-total table below. GPT-5 used low reasoning effort; the other models used their recorded defaults. Output lengths differ. No confidence intervals or quality scores were supplied."
+    }
+  },
+  "acr-streaming": {
+    "title": "Start with what the container needs",
+    "caption": "Conceptual artifact-streaming path for eligible Linux images. Measure cold-cache runs before and after enabling the feature; the source provides no completed benchmark values.",
+    "nodes":[
+      {"x":24,"y":72,"title":"ACR Premium","detail":"Eligible Linux image","icon":"registry"},
+      {"x":275,"y":72,"title":"Streaming artifact","detail":"Image conversion","icon":"layers","accent":true},
+      {"x":526,"y":72,"title":"AKS node","detail":"Streaming-enabled pool","icon":"cluster"},
+      {"x":275,"y":232,"title":"Cold-cache baseline","detail":"Repeat comparable runs","icon":"chart"},
+      {"x":526,"y":232,"title":"Application ready","detail":"Verify actual readiness","icon":"client"}
+    ],
+    "edges":[{"d":"M194 112 H275","x":234,"y":100,"label":"convert"},{"d":"M445 112 H526","x":484,"y":100,"label":"stream"},{"d":"M611 152 V232","x":649,"y":195,"label":"start"},{"d":"M445 272 H526","x":484,"y":260,"label":"compare"}]
+  },
+  "cilium-network-policy": {
+    "title": "Permit only the traffic you intend",
+    "caption": "Conceptual policy boundary, not a complete ruleset. DNS, cross-namespace communication, and external egress need explicit review and connectivity tests.",
+    "nodes":[
+      {"x":24,"y":72,"title":"Workload Pod","detail":"Source namespace","icon":"cluster"},
+      {"x":275,"y":72,"title":"Cilium policy","detail":"Identity + traffic rules","icon":"shield","accent":true},
+      {"x":526,"y":72,"title":"Allowed service","detail":"Selected destination","icon":"cluster"},
+      {"x":24,"y":232,"title":"DNS resolution","detail":"Required dependency","icon":"tools"},
+      {"x":526,"y":232,"title":"Other traffic","detail":"Deny when selected","icon":"shield"}
+    ],
+    "edges":[{"d":"M194 112 H275","x":234,"y":100,"label":"evaluate"},{"d":"M445 112 H526","x":484,"y":100,"label":"allow"},{"d":"M109 152 V232","x":150,"y":195,"label":"check DNS"},{"d":"M445 132 H484 V272 H526","x":510,"y":195,"label":"deny","dashed":true}]
+  },
+  "envoy-gateway": {
+    "title": "Separate API configuration from proxy traffic",
+    "caption": "Self-managed Envoy Gateway reconciles Gateway API resources into a data plane. The controller is not an extra hop in the application's request path.",
+    "nodes":[
+      {"x":24,"y":72,"title":"Client","detail":"Application request","icon":"client"},
+      {"x":275,"y":72,"title":"Envoy proxy","detail":"Gateway data plane","icon":"gateway","accent":true},
+      {"x":526,"y":72,"title":"Backend Service","detail":"Application Pods","icon":"cluster"},
+      {"x":24,"y":232,"title":"Gateway API","detail":"Gateway + HTTPRoute","icon":"layers"},
+      {"x":275,"y":232,"title":"Envoy Gateway","detail":"Controller / Helm","icon":"tools"}
+    ],
+    "edges":[{"d":"M194 112 H275","x":234,"y":100,"label":"HTTP(S)"},{"d":"M445 112 H526","x":484,"y":100,"label":"forward"},{"d":"M194 272 H275","x":234,"y":260,"label":"reconcile"},{"d":"M360 232 V152","x":403,"y":195,"label":"configure","dashed":true}]
+  },
+  "istio-gateway-api": {
+    "title": "Managed ingress with an explicit TLS boundary",
+    "caption": "Simplified managed Application Routing path. Key Vault integration configures certificates; it is not in the per-request traffic path. DNS automation is a separate concern.",
+    "nodes":[
+      {"x":24,"y":72,"title":"Client","detail":"Private network path","icon":"client"},
+      {"x":275,"y":72,"title":"Managed Gateway","detail":"approuting-istio","icon":"gateway","accent":true},
+      {"x":526,"y":72,"title":"Backend Service","detail":"HTTPRoute destination","icon":"cluster"},
+      {"x":24,"y":232,"title":"Key Vault","detail":"Certificate material","icon":"shield"},
+      {"x":275,"y":232,"title":"Routing operator","detail":"TLS synchronization","icon":"tools"}
+    ],
+    "edges":[{"d":"M194 112 H275","x":234,"y":100,"label":"HTTPS"},{"d":"M445 112 H526","x":484,"y":100,"label":"route"},{"d":"M194 272 H275","x":234,"y":260,"label":"identity"},{"d":"M360 232 V152","x":402,"y":195,"label":"TLS config","dashed":true}]
+  },
+  "ase-frontend-scaling": {
+    "title": "Set the floor before demand arrives",
+    "caption": "Proposed proactive design from the investigation, not a supplied implementation. Raising the configured minimum does not instantly create ready front ends.",
+    "nodes":[
+      {"x":24,"y":72,"title":"Event schedule","detail":"Base + timed overrides","icon":"chart"},
+      {"x":275,"y":72,"title":"Reconciler","detail":"Lead time + bounds","icon":"tools","accent":true},
+      {"x":526,"y":72,"title":"ASE ingress API","detail":"Configured minimum","icon":"gateway"},
+      {"x":275,"y":232,"title":"Observe capacity","detail":"Actual instance list","icon":"chart"},
+      {"x":526,"y":232,"title":"Platform scaling","detail":"Delayed convergence","icon":"cluster"}
+    ],
+    "edges":[{"d":"M194 112 H275","x":234,"y":100,"label":"desired"},{"d":"M445 112 H526","x":484,"y":100,"label":"PUT"},{"d":"M611 152 V232","x":650,"y":195,"label":"schedule"},{"d":"M526 272 H445","x":484,"y":260,"label":"observe"},{"d":"M360 232 V152","x":402,"y":195,"label":"feedback","dashed":true}],
+    "chart":{
+      "after":"change-minimum",
+      "title":"Observed scale-out time",
+      "subtitle":"Three recorded experiments / elapsed minutes / not an SLA",
+      "unit":"min",
+      "max":40,
+      "ticks":[0,10,20,30,40],
+      "rows":[{"label":"2 to 4 front ends","value":38},{"label":"2 to 3 front ends","value":20},{"label":"3 to 4 front ends","value":35}],
+      "caption":"Source: operation/elapsed-time table below. These are individual source observations, not averages. Scale-in is excluded from this chart because it took hours and one observation did not converge within the recorded window."
+    }
+  },
+  "managed-instance": {
+    "title": "One plan, distinct application endpoints",
+    "caption": "Inbound private endpoints are app-scoped; the Managed Instance boundary and outbound VNet integration are plan-scoped. Two apps do not share a plan-level private endpoint.",
+    "nodes":[
+      {"x":24,"y":72,"title":"Private endpoint A","detail":"Targets App A","icon":"shield"},
+      {"x":275,"y":72,"title":"App A","detail":"Web application","icon":"client"},
+      {"x":526,"y":152,"title":"Managed Instance","detail":"Shared plan boundary","icon":"layers","accent":true},
+      {"x":24,"y":232,"title":"Private endpoint B","detail":"Targets App B","icon":"shield"},
+      {"x":275,"y":232,"title":"App B","detail":"Web application","icon":"client"}
+    ],
+    "edges":[{"d":"M194 112 H275","x":234,"y":100,"label":"inbound"},{"d":"M194 272 H275","x":234,"y":260,"label":"inbound"},{"d":"M445 112 H484 V172 H526","x":498,"y":100,"label":"hosted in","dashed":true},{"d":"M445 272 H484 V212 H526","x":498,"y":296,"label":"hosted in","dashed":true}]
+  }
+}

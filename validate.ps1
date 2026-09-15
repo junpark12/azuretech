@@ -42,6 +42,14 @@ foreach ($file in $htmlFiles) {
     if ($html -notmatch '<html lang="en">' -or $html -notmatch '<meta charset="utf-8">') { $problems.Add("$($file.Name): missing language/encoding.") }
     $ids = @([regex]::Matches($html, '\bid="([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
     if (@($ids | Select-Object -Unique).Count -ne $ids.Count) { $problems.Add("$($file.Name): duplicate IDs.") }
+    $svgs = [regex]::Matches($html, '<svg\b.*?</svg>', 'Singleline')
+    $expectedSvgCount = if ($file.Name -eq 'index.html') { 10 } elseif ($file.BaseName -in @('translation-performance','ase-frontend-scaling')) { 2 } else { 1 }
+    if ($svgs.Count -ne $expectedSvgCount) { $problems.Add("$($file.Name): expected $expectedSvgCount visual(s), found $($svgs.Count).") }
+    foreach ($svg in $svgs) {
+        try { $null = [xml]$svg.Value } catch { $problems.Add("$($file.Name): malformed SVG.") }
+        if ($svg.Value -match '<(?:script|foreignObject|image)\b|\son\w+=|(?:href|src)=') { $problems.Add("$($file.Name): unexpected SVG active or external content.") }
+        if ($svg.Value -notmatch '(?:aria-label|aria-hidden)=') { $problems.Add("$($file.Name): missing SVG accessibility treatment.") }
+    }
     foreach ($match in [regex]::Matches($html, '(?:href|src)="([^"]+)"')) {
         $link = [System.Net.WebUtility]::HtmlDecode($match.Groups[1].Value)
         if ($link -match '^https://') { continue }
@@ -59,6 +67,21 @@ foreach ($file in $htmlFiles) {
             if ($targetText -notmatch ('\bid="' + [regex]::Escape($anchor) + '"')) { $problems.Add("$($file.Name): missing anchor $link") }
         }
     }
+}
+$visualData = Get-Content (Join-Path $PSScriptRoot 'visuals.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$translation = Get-Content (Join-Path $PSScriptRoot 'content\translation-performance.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+foreach ($row in $visualData.'translation-performance'.chart.rows) {
+    $value = ([int]$row.value).ToString('N0', [System.Globalization.CultureInfo]::InvariantCulture)
+    if ($translation.bodyHtml -notmatch ('<td>' + [regex]::Escape($row.label) + '</td><td>' + [regex]::Escape($value) + '</td>')) {
+        $problems.Add("Translation chart value not found in source table: $($row.label)")
+    }
+}
+$ase = Get-Content (Join-Path $PSScriptRoot 'content\ase-frontend-scaling.html') -Raw -Encoding UTF8
+foreach ($row in $visualData.'ase-frontend-scaling'.chart.rows) {
+    $labelParts = $row.label -split ' '
+    $sourcePattern = '<td>' + $labelParts[0] + ' &#8594; ' + $labelParts[2] + '</td><td>' + $row.value + ' minutes</td>'
+    $normalized = $ase.Replace([string][char]0x2192, '&#8594;')
+    if ($normalized -notmatch $sourcePattern) { $problems.Add("ASE chart value not found in source table: $($row.label)") }
 }
 foreach ($resource in $manifest.resources) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $resource.Replace('/', '\')) -PathType Leaf)) { $problems.Add("Manifest resource missing: $resource") }

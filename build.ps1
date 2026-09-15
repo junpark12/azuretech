@@ -5,6 +5,7 @@ $output = Join-Path $root 'docs'
 $expected = @('acr-streaming', 'ai-gateway', 'ai-gateway-existing', 'cilium-network-policy', 'codex', 'envoy-gateway', 'istio-gateway-api', 'translation-performance', 'ase-frontend-scaling', 'managed-instance')
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 function Encode([string]$value) { [System.Net.WebUtility]::HtmlEncode($value) }
+. (Join-Path $root 'visuals.ps1')
 function Write-Utf8([string]$path, [string]$value) {
     [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path)) | Out-Null
     [System.IO.File]::WriteAllText($path, $value, $utf8)
@@ -84,6 +85,7 @@ $cards = foreach ($topic in $topics) {
     $resources = if ($downloadCount -eq 0) { 'In-page examples' } else { "$downloadCount resource files" }
     @"
 <article class="topic-card" data-category="$category" data-search="$(Encode "$($topic.title) $($topic.summary) $($topic.category)")">
+$(Topic-Diagram $topic.slug -Thumbnail)
 <span class="eyebrow">$category</span><h2><a href="topics/$slug.html">$title</a></h2><p>$summary</p><div class="card-bottom"><span>$resources</span><a href="topics/$slug.html" aria-label="Read $title">Read field note <span aria-hidden="true">&#8599;</span></a></div>
 </article>
 "@
@@ -106,7 +108,7 @@ foreach ($topic in $topics) {
     $headings = [regex]::Matches($topic.bodyHtml, '<h2\b[^>]*\bid="([^"]+)"[^>]*>(.*?)</h2>', 'Singleline,IgnoreCase')
     $ids = @($headings | ForEach-Object { $_.Groups[1].Value })
     if (@($ids | Select-Object -Unique).Count -ne $ids.Count) { throw "Duplicate section ID in $($topic.slug)" }
-    if ('resources' -in $ids -or 'editorial-notes' -in $ids) { throw "Reserved section ID in $($topic.slug)" }
+    if ('resources' -in $ids -or 'editorial-notes' -in $ids -or 'visual-overview' -in $ids) { throw "Reserved section ID in $($topic.slug)" }
     $tocItems = ($headings | ForEach-Object {
         '<li><a href="#' + (Encode $_.Groups[1].Value) + '">' + (Encode ([System.Net.WebUtility]::HtmlDecode([regex]::Replace($_.Groups[2].Value, '<[^>]+>', '')))) + '</a></li>'
     }) -join ''
@@ -131,10 +133,11 @@ foreach ($topic in $topics) {
     $sourceTitles = ($topic.sourceDocuments | ForEach-Object { '<li>' + (Encode $_) + '</li>' }) -join ''
     $article = @"
 <main id="main" class="topic-layout">
-<aside class="toc"><details open><summary>On this page</summary><ol>$tocItems<li><a href="#resources">Resources</a></li><li><a href="#editorial-notes">Editorial notes</a></li></ol></details><a class="back-link" href="../index.html">&#8592; All topics</a></aside>
+<aside class="toc"><details open><summary>On this page</summary><ol><li><a href="#visual-overview">Architecture at a glance</a></li>$tocItems<li><a href="#resources">Resources</a></li><li><a href="#editorial-notes">Editorial notes</a></li></ol></details><a class="back-link" href="../index.html">&#8592; All topics</a></aside>
 <article class="article"><header class="article-header"><p class="eyebrow">$(Encode $topic.category) / FIELD NOTE</p><h1>$(Encode $topic.title)</h1><p class="lead">$(Encode $topic.summary)</p><div class="article-meta"><span>English edition</span><span>Parameterized examples</span><span>September 2026</span></div></header>
 <aside class="editorial-note"><strong>Environment-specific evidence.</strong> Measurements and preview behavior reflect the source investigation. They are not current service guarantees. All configuration values must be supplied for your own environment.</aside>
-<div class="article-body">$($topic.bodyHtml)<h2 id="resources">Resources</h2>$resourceSection<h2 id="editorial-notes">Editorial notes</h2><p>This page consolidates the following source documents into an English technical guide:</p><ul>$sourceTitles</ul><ul>$omissions</ul><p>No original credentials or private repository links are included. Do not put populated configuration files or copied production outputs back into this public site.</p></div>
+$(Topic-Diagram $topic.slug)
+<div class="article-body">$(Topic-Chart $topic.slug $topic.bodyHtml)<h2 id="resources">Resources</h2>$resourceSection<h2 id="editorial-notes">Editorial notes</h2><p>This page consolidates the following source documents into an English technical guide:</p><ul>$sourceTitles</ul><ul>$omissions</ul><p>No original credentials or private repository links are included. Do not put populated configuration files or copied production outputs back into this public site.</p></div>
 </article></main>
 "@
     Write-Utf8 (Join-Path $output "topics\$($topic.slug).html") (Page $topic.title $topic.summary '../' $article)

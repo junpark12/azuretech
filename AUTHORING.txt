@@ -13,6 +13,8 @@ Layout
   build.ps1             Dependency-free Windows PowerShell site generator
   validate.ps1          Local artifact and link validation
   preview.ps1           Loopback-only preview server
+  visuals.json          English conceptual diagrams and measured chart data
+  visuals.ps1           Build-time inline SVG renderer (no remote images)
 
 Build
   powershell.exe -NoProfile -File .\build.ps1
@@ -42,7 +44,19 @@ Editing
   downloads/<topic>/file.ext. Links written inside bodyHtml are relative to
   docs/topics/<topic>.html, so use ../downloads/<topic>/file.ext.
   Section headings must have unique IDs. The builder reserves "resources"
-  and "editorial-notes" for the shared closing sections.
+  and "editorial-notes" for the shared closing sections, and "visual-overview"
+  for each topic's architecture figure.
+
+Visuals
+  Topic cards reuse a decorative icon-only version of the article diagram.
+  Article figures have English captions and accessible text descriptions.
+  On narrow screens, diagrams scroll rather than shrinking text to illegibility.
+  Dashed paths distinguish configuration/secondary relationships; captions
+  explain conceptual simplifications and unimplemented designs.
+  Measurement charts start at zero and preserve source units. Translation
+  values are eight-scenario means; ASE scale-out values are individual runs.
+  Do not add invented before/after numbers for topics without measurements.
+  Original source screenshots are not used.
 
 Public-content safeguards
   Never copy source repositories wholesale into this public repository.
