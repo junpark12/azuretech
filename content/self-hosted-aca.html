@@ -1,0 +1,582 @@
+<h2 id="purpose-and-boundaries">What this design solves</h2>
+<p>A GitHub-hosted runner is convenient until a workflow needs a private database, an internal API, a controlled outbound path, or a carefully maintained toolchain. An always-on self-hosted VM solves some of those requirements but adds idle compute, patching, and capacity management. This guide uses event-driven Azure Container Apps Jobs to start an ephemeral GitHub Actions runner when a matching job is queued.</p>
+<p>The design combines a workload-profiles Container Apps environment, its Consumption profile, a dedicated infrastructure subnet, Azure Firewall and a user-defined route, private endpoints for Azure Container Registry and Key Vault, and a GitHub App rather than a long-lived personal access token. A small Express application provides a concrete deployment target: the runner authenticates to Azure using its managed identity and performs an App Service zip deployment.</p>
+<blockquote><p>This is a sanitized technical reconstruction, not a claim that these public examples were deployed. The source records successful end-to-end deployment after several configuration fixes. Its earlier progress notes, example snippets, README, and archived proposal describe different stages. The instructions below reconcile those stages, identify repairs, and exclude original account details and screenshots.</p></blockquote>
+<p>Ephemeral means the registered runner accepts one job and is then discarded. It does not mean an untrusted workflow is safe, an execution is guaranteed exactly once, or every Azure resource becomes free at idle. The runner can reach its authorized private services and managed identity while executing; restrict who can submit work to it.</p>
+
+<h2 id="execution-flow">The complete execution and authentication flow</h2>
+<ol>
+<li>An authorized user dispatches a workflow. GitHub queues a job with <code>runs-on: [self-hosted, container-app]</code>.</li>
+<li>The managed KEDA GitHub runner scaler polls the configured repositories using GitHub App credentials. It enumerates workflow runs and queued jobs, applying scope and label filters.</li>
+<li>A nonzero eligible queue causes Container Apps to create job executions, subject to the event configuration and platform limits. The example uses one replica per execution and one required successful replica.</li>
+<li>Container Apps pulls the runner image from private ACR and resolves the Key Vault-backed secret using the job identity. Private DNS and authorization must work before the runner script can help.</li>
+<li>The startup script signs an RS256 JWT using the GitHub App private key. It exchanges that JWT for an installation access token, then exchanges the installation token for a runner registration token.</li>
+<li>The runner registers at the repository or organization URL with its custom label and <code>--ephemeral</code>. Organization scope can additionally use a restricted runner group.</li>
+<li>GitHub assigns an eligible job. The workflow checks out source, selects Node.js, installs locked dependencies, packages only application files, and deploys through Azure managed identity.</li>
+<li>The runner reports its result and exits after one job. When no eligible work remains, no further executions are requested with <code>min-executions=0</code>. Preserve diagnostic logs before ephemeral storage disappears.</li>
+</ol>
+<table><thead><tr><th>Credential or identity</th><th>Purpose</th><th>Keep separate from</th></tr></thead><tbody>
+<tr><td>GitHub App private key</td><td>Signs short-lived JWTs for the scaler and runner bootstrap.</td><td>Workflow source, container layers, and public download files.</td></tr>
+<tr><td>Installation access token</td><td>Calls GitHub APIs within the installation's permissions and repository selection.</td><td>A runner registration token and the workflow's GITHUB_TOKEN.</td></tr>
+<tr><td>Runner registration token</td><td>Registers the ephemeral runner at the chosen scope.</td><td>An Azure deployment credential.</td></tr>
+<tr><td>Job managed identity</td><td>Authorizes ACR pull, Key Vault reads, and narrowly scoped App Service deployment.</td><td>GitHub App authentication and an App Service publish profile.</td></tr>
+<tr><td>Workflow GITHUB_TOKEN</td><td>Read-only checkout access in the supplied workflow.</td><td>The privileged identity reachable by code inside the runner.</td></tr>
+</tbody></table>
+
+<h2 id="network-model">Private access is not the same as internet egress control</h2>
+<p>The Container Apps environment is attached to a VNet. Its infrastructure subnet is exclusively reserved for that environment; do not place a VM, another environment, an App Service integration, or even a private endpoint in that subnet. Create separate subnets for private endpoints and Azure Firewall. Size them for platform reservations and expected scaling rather than treating the minimum prefix as a capacity recommendation.</p>
+<p>A workload-profiles environment supports the UDR/firewall design used here. Its Consumption profile can still run serverless jobs. Do not confuse that with a legacy Consumption-only environment, whose networking capabilities differ. The selected profile controls compute behavior; VNet connectivity, DNS, routes, network security rules, and service authorization determine which private resources the workload can actually reach.</p>
+<ul>
+<li><strong>Internal environment:</strong> avoids an internet-facing environment ingress endpoint. Jobs do not need an inbound HTTP endpoint. Internal-only is not a blanket denial of all VNet traffic and does not itself create a forced-egress route.</li>
+<li><strong>Default route:</strong> an infrastructure-subnet <code>0.0.0.0/0</code> UDR with <code>VirtualAppliance</code> next hop sends matching outbound traffic to the firewall. More-specific system, peering, gateway, or user routes can take precedence.</li>
+<li><strong>Private endpoints:</strong> ACR and Key Vault data-plane access uses their private IPs when DNS resolves correctly. The associated private DNS zones must be linked or forwarded to the client's VNet.</li>
+<li><strong>Private databases and APIs:</strong> require actual VNet peering or VPN/ExpressRoute connectivity, correct return routes, DNS resolution, destination firewall rules, and application credentials. A default internet route does not provide that connectivity.</li>
+<li><strong>SCM deployment:</strong> reaching App Service's public site is not proof that the runner can reach its SCM/Kudu endpoint. An App Service private endpoint provides inbound access to the app and SCM with suitable DNS. App Service VNet integration instead concerns the web app's outbound connectivity.</li>
+</ul>
+<p>For an inspected private-network path, add a more-specific route to the firewall where necessary, permit only the required destination prefixes and ports, and ensure symmetric routing. For direct peering, use the peering-generated system routes; <code>VNetPeering</code> is not a user-defined-route next-hop type. A gateway route is appropriate only when a compatible gateway path actually exists. Never invent a next hop to bypass a required inspection boundary.</p>
+
+<h2 id="prerequisites-and-variables">Prerequisites and variable contract</h2>
+<p>Use an approved Azure administration session with Azure CLI, the Container Apps command set, Bash, and jq. Provisioning resources and assigning RBAC roles are different permissions: Contributor alone cannot generally create role assignments. Have an appropriately scoped role administrator make those assignments. Register required resource providers under your subscription policy, including Microsoft.App, Microsoft.OperationalInsights, Microsoft.Network, Microsoft.ContainerRegistry, Microsoft.KeyVault, and Microsoft.Web. Check CLI help and regional service availability before executing any change.</p>
+<p>You also need permission to create and install a GitHub App, administer the target repository or organization runners, create a protected deployment environment, and access a network-connected administration/build host. Ordinary Cloud Shell access does not automatically reach private endpoints. Private-key import must happen from an approved private-connected client, not by temporarily defeating a vault network policy.</p>
+<p>All commands below are Bash examples for a reviewed deployment environment. They have not been executed for this article. Supply names and IDs through your approved environment configuration. No example contains a populated subscription, tenant, application, principal, installation, or owner identifier.</p>
+<table><thead><tr><th>Variables</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>SUBSCRIPTION_ID</code>, <code>AZURE_TENANT_ID</code>, <code>LOCATION</code></td><td>Explicit target subscription, expected tenant, and supported Azure region.</td></tr>
+<tr><td><code>RESOURCE_GROUP</code>, <code>VNET_NAME</code>, <code>INFRA_SUBNET</code>, <code>PE_SUBNET</code></td><td>Runner infrastructure group, VNet, exclusive Container Apps subnet, and private endpoint subnet.</td></tr>
+<tr><td><code>FW_NAME</code>, <code>FW_PUBLIC_IP_NAME</code>, <code>ROUTE_TABLE_NAME</code></td><td>Firewall resources and the infrastructure subnet's route table. AzureFirewallSubnet is a platform-required subnet name.</td></tr>
+<tr><td><code>ACR_NAME</code>, <code>KV_NAME</code>, <code>CAE_NAME</code>, <code>JOB_NAME</code></td><td>Globally unique registry/vault names as required, environment name, and job name.</td></tr>
+<tr><td><code>ACR_PE_NAME</code>, <code>KV_PE_NAME</code></td><td>Private endpoint names, not hostnames or credentials.</td></tr>
+<tr><td><code>IMAGE_NAME</code>, <code>IMAGE_TAG</code>, <code>RUNNER_VERSION</code>, <code>RUNNER_SHA256</code></td><td>Reviewed image coordinates and an official Linux x64 runner release/checksum.</td></tr>
+<tr><td><code>GITHUB_APP_ID</code>, <code>GITHUB_APP_INSTALLATION_ID</code>, <code>GITHUB_OWNER</code>, <code>GITHUB_REPO</code></td><td>App metadata and the repository scope used by the baseline configuration.</td></tr>
+<tr><td><code>PRIVATE_KEY_FILE</code>, <code>SECRET_WRITER_OBJECT_ID</code></td><td>Secure local PEM path and the object ID authorized to import it. Neither belongs in the image context.</td></tr>
+<tr><td><code>AZURE_RESOURCE_GROUP</code>, <code>AZURE_WEBAPP_NAME</code>, <code>APP_PLAN_NAME</code></td><td>Target application group, web app, and Linux App Service plan.</td></tr>
+<tr><td><code>LOG_WORKSPACE_NAME</code>, <code>STORAGE_SERVICE_TAG</code></td><td>Diagnostic workspace and the documented regional Storage service tag, for example the valid tag corresponding to your chosen region.</td></tr>
+</tbody></table>
+<pre><code>set +x
+set -euo pipefail
+for name in SUBSCRIPTION_ID AZURE_TENANT_ID LOCATION RESOURCE_GROUP VNET_NAME \
+  INFRA_SUBNET PE_SUBNET FW_NAME FW_PUBLIC_IP_NAME ROUTE_TABLE_NAME \
+  ACR_NAME KV_NAME CAE_NAME JOB_NAME ACR_PE_NAME KV_PE_NAME \
+  IMAGE_NAME IMAGE_TAG RUNNER_VERSION RUNNER_SHA256 \
+  GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_OWNER GITHUB_REPO \
+  PRIVATE_KEY_FILE SECRET_WRITER_OBJECT_ID AZURE_RESOURCE_GROUP \
+  AZURE_WEBAPP_NAME APP_PLAN_NAME LOG_WORKSPACE_NAME STORAGE_SERVICE_TAG; do
+  test -n "${!name:-}" || { printf 'Set %s before continuing.\n' "$name" &gt;&amp;2; exit 1; }
+done
+
+# Illustrative RFC1918 ranges only: replace after checking for overlap.
+VNET_CIDR="172.22.0.0/16"
+INFRA_CIDR="172.22.0.0/23"
+PE_CIDR="172.22.2.0/27"
+FW_CIDR="172.22.3.0/26"
+FW_SUBNET="AzureFirewallSubnet"
+
+az account set --subscription "$SUBSCRIPTION_ID"
+test "$(az account show --query tenantId -o tsv)" = "$AZURE_TENANT_ID"
+az group create --name "$RESOURCE_GROUP" --location "$LOCATION" -o none</code></pre>
+<p>The VNet and subnet prefixes above are illustrative, not copied from a deployed environment. Do not use them without an address-plan review. Resource IDs such as <code>ACR_ID</code> and <code>JOB_PRINCIPAL_ID</code> are derived later rather than pasted into public instructions.</p>
+
+<h2 id="github-app-setup">Create the GitHub App and choose runner scope</h2>
+<ol>
+<li>Open the appropriate account or organization's Settings, Developer settings, GitHub Apps, and create an app. Give it an approved descriptive name and a legitimate homepage. A webhook is unnecessary for this polling design, so disable it.</li>
+<li>For the repository-scoped example, request Actions read access for polling, Administration read/write for runner registration, and mandatory Metadata read access. For organization-scoped runners, add Organization Self-hosted runners read/write. Confirm exact permissions against the GitHub REST endpoint and the KEDA version supported by your Container Apps environment.</li>
+<li>Record the numeric App ID, generate a private key, and keep the PEM in approved secure storage. The App ID is not the same as the installation ID or a client ID.</li>
+<li>Install the app on the intended owner and only the repositories it needs. Record that installation ID. An app definition without an installation cannot issue usable installation access tokens for this workflow.</li>
+<li>For an organization, create a runner group that allows only approved repositories and workflows as supported. Keep privileged deployment runners away from untrusted public-repository work.</li>
+<li>If app permissions change after installation, have the installation owner review and accept the new request in Installed GitHub Apps. Editing the app definition does not automatically elevate an existing installation.</li>
+</ol>
+<p>The source also tried Actions write and Workflows write permissions. They are not a baseline requirement for simply reading queued jobs and registering a runner. Workflows write is relevant to modifying workflow files, which this sample does not do. Grant additional permissions only for an identified operation, not to suppress an unexplained error.</p>
+<table><thead><tr><th>Setting</th><th>Repository baseline</th><th>Organization alternative</th></tr></thead><tbody>
+<tr><td><code>RUNNER_SCOPE</code> / scaler <code>runnerScope</code></td><td><code>repo</code></td><td><code>org</code></td></tr>
+<tr><td>Runner URL</td><td><code>https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}</code></td><td><code>https://github.com/${GITHUB_OWNER}</code></td></tr>
+<tr><td>Registration API path</td><td><code>/repos/{owner}/{repo}/actions/runners/registration-token</code></td><td><code>/orgs/{owner}/actions/runners/registration-token</code></td></tr>
+<tr><td>Repository environment variable</td><td>Required.</td><td>Not used by runner registration.</td></tr>
+<tr><td>Scaler <code>repos</code></td><td>Set explicitly to the permitted repository.</td><td>Use an explicit comma-separated allowlist to avoid scanning every repository.</td></tr>
+<tr><td>Runner group</td><td>Not passed by the updated script.</td><td>Pass <code>RUNNER_GROUP</code>; restrict repository access.</td></tr>
+<tr><td>Runner settings location</td><td>Repository Settings, Actions, Runners.</td><td>Organization Settings, Actions, Runners.</td></tr>
+</tbody></table>
+<p>A personal GitHub account can use repository scope. It must not call the organization registration endpoint for that personal owner. Organization runner groups are not a personal-account feature. A public repository introduces a serious execution trust problem even when no runner group exists; removing a group restriction is not a security fix.</p>
+
+<h2 id="vnet-and-subnets">Create the VNet and dedicated subnets</h2>
+<pre><code>az network vnet create --resource-group "$RESOURCE_GROUP" \
+  --name "$VNET_NAME" --location "$LOCATION" --address-prefix "$VNET_CIDR"
+
+az network vnet subnet create --resource-group "$RESOURCE_GROUP" \
+  --vnet-name "$VNET_NAME" --name "$INFRA_SUBNET" \
+  --address-prefixes "$INFRA_CIDR" --delegations Microsoft.App/environments
+
+az network vnet subnet create --resource-group "$RESOURCE_GROUP" \
+  --vnet-name "$VNET_NAME" --name "$PE_SUBNET" \
+  --address-prefixes "$PE_CIDR" --disable-private-endpoint-network-policies true
+
+az network vnet subnet create --resource-group "$RESOURCE_GROUP" \
+  --vnet-name "$VNET_NAME" --name "$FW_SUBNET" --address-prefixes "$FW_CIDR"
+
+INFRA_SUBNET_ID=$(az network vnet subnet show --resource-group "$RESOURCE_GROUP" \
+  --vnet-name "$VNET_NAME" --name "$INFRA_SUBNET" --query id -o tsv)</code></pre>
+<p>The private-endpoint network-policy flag preserves the source's simple baseline. It is not a recommendation to bypass inspection requirements: evaluate private endpoint NSG/UDR support and the effective routes for your intended security model. For custom DNS, provide recursive resolution of public service names and conditional forwarding for private zones; a linked Azure private DNS zone alone does not automatically reconfigure an external DNS server.</p>
+
+<h2 id="firewall-and-udr">Build the firewall policy and attach the UDR</h2>
+<p>The source's eventual working configuration had three classes of outbound rules: GitHub and package-download application rules; Azure authentication/management/deployment application rules; and Azure platform service-tag network rules. An initial GitHub-only allowlist was insufficient. The following classic firewall-rule examples express that baseline; adapt them to Firewall Policy if your organization manages rules centrally.</p>
+<pre><code>az network public-ip create --resource-group "$RESOURCE_GROUP" \
+  --name "$FW_PUBLIC_IP_NAME" --sku Standard --allocation-method Static
+az network firewall create --resource-group "$RESOURCE_GROUP" \
+  --name "$FW_NAME" --location "$LOCATION" --sku AZFW_VNet --tier Standard
+az network firewall ip-config create --resource-group "$RESOURCE_GROUP" \
+  --firewall-name "$FW_NAME" --name egress \
+  --public-ip-address "$FW_PUBLIC_IP_NAME" --vnet-name "$VNET_NAME"
+FW_PRIVATE_IP=$(az network firewall ip-config list --resource-group "$RESOURCE_GROUP" \
+  --firewall-name "$FW_NAME" --query "[0].privateIPAddress" -o tsv)
+test -n "$FW_PRIVATE_IP"
+
+az network firewall application-rule create \
+  --resource-group "$RESOURCE_GROUP" --firewall-name "$FW_NAME" \
+  --collection-name runner-github-egress --priority 200 --action Allow \
+  --name github-and-packages --source-addresses "$INFRA_CIDR" \
+  --protocols Https=443 --target-fqdns \
+  github.com api.github.com "*.actions.githubusercontent.com" \
+  codeload.github.com objects.githubusercontent.com \
+  github-releases.githubusercontent.com release-assets.githubusercontent.com \
+  raw.githubusercontent.com nodejs.org "*.nodejs.org" registry.npmjs.org \
+  "*.blob.core.windows.net"
+
+az network firewall application-rule create \
+  --resource-group "$RESOURCE_GROUP" --firewall-name "$FW_NAME" \
+  --collection-name runner-azure-egress --priority 220 --action Allow \
+  --name azure-management-and-deployment --source-addresses "$INFRA_CIDR" \
+  --protocols Https=443 --target-fqdns \
+  login.microsoftonline.com management.azure.com \
+  "${AZURE_WEBAPP_NAME}.azurewebsites.net" \
+  "${AZURE_WEBAPP_NAME}.scm.azurewebsites.net"
+
+az network firewall network-rule create \
+  --resource-group "$RESOURCE_GROUP" --firewall-name "$FW_NAME" \
+  --collection-name runner-platform-egress --priority 210 --action Allow \
+  --name platform-https --source-addresses "$INFRA_CIDR" \
+  --protocols TCP --destination-ports 443 --destination-addresses \
+  AzureActiveDirectory AzureContainerRegistry MicrosoftContainerRegistry \
+  AzureFrontDoor.FirstParty AzureMonitor "$STORAGE_SERVICE_TAG"
+
+az network route-table create --resource-group "$RESOURCE_GROUP" \
+  --name "$ROUTE_TABLE_NAME"
+az network route-table route create --resource-group "$RESOURCE_GROUP" \
+  --route-table-name "$ROUTE_TABLE_NAME" --name default-egress \
+  --address-prefix 0.0.0.0/0 --next-hop-type VirtualAppliance \
+  --next-hop-ip-address "$FW_PRIVATE_IP"
+az network vnet subnet update --resource-group "$RESOURCE_GROUP" \
+  --vnet-name "$VNET_NAME" --name "$INFRA_SUBNET" \
+  --route-table "$ROUTE_TABLE_NAME"</code></pre>
+<p>This is a starting rule set, not a permanent exhaustive GitHub allowlist. Actions, package feeds, redirects, runner updates, and artifact endpoints evolve. Consult GitHub's current communication requirements, including the artifact/cache endpoints relevant to the actions you actually use. The source allowed HTTP 80 as well as HTTPS; these examples start with HTTPS only. Add HTTP only for a documented dependency, preferably removing that dependency instead.</p>
+<p>The source's <code>*.blob.core.windows.net</code> rule supported workflow log/artifact traffic but is broad. Service-tag network rules also authorize broad address sets and are evaluated before application rules in Azure Firewall. Do not describe the resulting policy as allowing only GitHub domains. Review whether destinations can be narrowed, inspect firewall logs, and distinguish platform dependencies from user-workload egress. The source also allowed <code>graph.microsoft.com</code>; add it only if a selected command actually uses Microsoft Graph.</p>
+<p>Microsoft's Container Apps networking guidance identifies the AzureActiveDirectory service tag for managed identity, MicrosoftContainerRegistry and AzureFrontDoor.FirstParty for platform images, AzureMonitor when monitoring is enabled, and registry/storage dependencies as applicable. Private ACR image pulls still need their private path rather than a public service-tag allow rule. Preserve required DNS and within-subnet communication in any NSGs. Application-rule FQDNs are not a substitute for every platform network prerequisite.</p>
+<h3>Optional inspected path to an internal API or database</h3>
+<pre><code>: "${INTERNAL_SERVICE_CIDR:?Set the authorized destination prefix}"
+: "${INTERNAL_SERVICE_PORT:?Set the required destination port}"
+az network firewall network-rule create \
+  --resource-group "$RESOURCE_GROUP" --firewall-name "$FW_NAME" \
+  --collection-name runner-private-services --priority 230 --action Allow \
+  --name approved-private-service --source-addresses "$INFRA_CIDR" \
+  --destination-addresses "$INTERNAL_SERVICE_CIDR" \
+  --destination-ports "$INTERNAL_SERVICE_PORT" --protocols TCP</code></pre>
+<p>This rule only helps when the traffic actually traverses the firewall. Verify effective routes at both ends, peering or gateway connectivity, private DNS, and return routing. A more-specific peering system route can bypass the default firewall route unless an intentional supported routing design changes that path.</p>
+
+<h2 id="private-acr">Create private ACR, endpoint, and DNS</h2>
+<p>Use a registry tier supporting Private Link; the source uses Premium. Disable registry public access and configure the private endpoint and DNS before expecting clients to push or pull. Registry authentication and network reachability are separate gates.</p>
+<pre><code>az acr create --resource-group "$RESOURCE_GROUP" --name "$ACR_NAME" \
+  --location "$LOCATION" --sku Premium --admin-enabled false \
+  --public-network-enabled false
+ACR_ID=$(az acr show --name "$ACR_NAME" --query id -o tsv)
+ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
+
+az network private-dns zone create --resource-group "$RESOURCE_GROUP" \
+  --name privatelink.azurecr.io
+az network private-dns link vnet create --resource-group "$RESOURCE_GROUP" \
+  --zone-name privatelink.azurecr.io --name registry-link \
+  --virtual-network "$VNET_NAME" --registration-enabled false
+az network private-endpoint create --resource-group "$RESOURCE_GROUP" \
+  --name "$ACR_PE_NAME" --vnet-name "$VNET_NAME" --subnet "$PE_SUBNET" \
+  --private-connection-resource-id "$ACR_ID" --group-id registry \
+  --connection-name registry-private-connection
+ACR_DNS_ID=$(az network private-dns zone show --resource-group "$RESOURCE_GROUP" \
+  --name privatelink.azurecr.io --query id -o tsv)
+az network private-endpoint dns-zone-group create --resource-group "$RESOURCE_GROUP" \
+  --endpoint-name "$ACR_PE_NAME" --name registry-dns \
+  --private-dns-zone "$ACR_DNS_ID" --zone-name registry</code></pre>
+<p>Check that the endpoint connection is approved and that both the registry login and applicable regional data endpoints resolve through the intended private DNS records. A registry can authenticate successfully while layer downloads still fail because its data endpoint path is missing. Link the zone to other approved build/admin VNets or arrange private DNS forwarding as necessary.</p>
+
+<h2 id="private-key-vault">Create Key Vault privately and import the App key</h2>
+<p>Create the RBAC-enabled vault with public network access disabled. Establish its private endpoint and DNS before importing secrets. This order deliberately replaces the source's early public-first bootstrap. If policy already disables public access, use an approved private-connected administration host; do not work around the policy.</p>
+<pre><code>az keyvault create --resource-group "$RESOURCE_GROUP" --name "$KV_NAME" \
+  --location "$LOCATION" --enable-rbac-authorization true \
+  --public-network-access Disabled
+KV_ID=$(az keyvault show --name "$KV_NAME" --query id -o tsv)
+
+az network private-dns zone create --resource-group "$RESOURCE_GROUP" \
+  --name privatelink.vaultcore.azure.net
+az network private-dns link vnet create --resource-group "$RESOURCE_GROUP" \
+  --zone-name privatelink.vaultcore.azure.net --name vault-link \
+  --virtual-network "$VNET_NAME" --registration-enabled false
+az network private-endpoint create --resource-group "$RESOURCE_GROUP" \
+  --name "$KV_PE_NAME" --vnet-name "$VNET_NAME" --subnet "$PE_SUBNET" \
+  --private-connection-resource-id "$KV_ID" --group-id vault \
+  --connection-name vault-private-connection
+KV_DNS_ID=$(az network private-dns zone show --resource-group "$RESOURCE_GROUP" \
+  --name privatelink.vaultcore.azure.net --query id -o tsv)
+az network private-endpoint dns-zone-group create --resource-group "$RESOURCE_GROUP" \
+  --endpoint-name "$KV_PE_NAME" --name vault-dns \
+  --private-dns-zone "$KV_DNS_ID" --zone-name vault
+
+# An authorized role administrator grants the import identity this temporary role.
+az role assignment create --assignee-object-id "$SECRET_WRITER_OBJECT_ID" \
+  --role "Key Vault Secrets Officer" --scope "$KV_ID" -o none
+
+# Run from the approved private-connected client as that import identity.
+# Suppress output: secret-set responses can contain the secret value.
+az keyvault secret set --vault-name "$KV_NAME" --name runner-app-id \
+  --value "$GITHUB_APP_ID" -o none
+az keyvault secret set --vault-name "$KV_NAME" --name runner-installation-id \
+  --value "$GITHUB_APP_INSTALLATION_ID" -o none
+az keyvault secret set --vault-name "$KV_NAME" --name runner-app-key \
+  --file "$PRIVATE_KEY_FILE" -o none</code></pre>
+<p>App and installation IDs are metadata, not private keys; storing them in the vault is optional organizational convenience. The scaler will still receive these IDs as metadata. The PEM must retain valid multiline formatting. Do not paste it into a CLI <code>--value</code>, shell history, a workflow, or an image build argument.</p>
+<p>The source used a temporary VM or other network-connected compute to import secrets through Private Link. If using that pattern, place it outside the Container Apps infrastructure subnet, grant only temporary import permission, and remove the temporary role/resource after verifying the import. Keep the runner identity read-only on the required secrets rather than using it as a permanent Secrets Officer. Apply your vault's recovery, rotation, and access-review policies.</p>
+<p>A later source failure was traced to the Key Vault private endpoint and private DNS zone being omitted entirely. A vault in the same resource group as a VNet is not automatically reachable privately. Resolve the normal <code>${KV_NAME}.vault.azure.net</code> hostname from the actual client and verify the expected private path before diagnosing secret content or RBAC.</p>
+
+<h2 id="runner-image-and-bootstrap">Prepare the runner image and hardened startup script</h2>
+<p>The downloads contain a complete non-root Ubuntu runner Dockerfile and <code>start.sh</code>. The image supplies curl, Git, jq, OpenSSL, zip/unzip, runner runtime dependencies, and Azure CLI. The application itself is not baked into this image: GitHub checks it out for each job, and App Service hosts the resulting Node application.</p>
+<p>The provided local source snapshot already includes Azure CLI and zip in its Dockerfile. An older archived, unmerged proposal instead added conditional installation using sudo inside the workflow. That proposal is not treated as merged. Installing these prerequisites during a trusted image build is appropriate here because the runner executes as an unprivileged user and the deployment should not depend on sudo being available.</p>
+<h3>JWT and token exchange details</h3>
+<p>The script creates an <code>iat</code> value 60 seconds in the past to allow modest clock skew and an <code>exp</code> value 540 seconds in the future, then signs an RS256 JWT. This stays within GitHub's short JWT lifetime model. It calls <code>POST /app/installations/{installation_id}/access_tokens</code> with <code>Authorization: Bearer ${JWT}</code>, followed by the scope-specific runner registration endpoint with the installation token.</p>
+<p>The original script already uses the GitHub App JWT in its token-exchange authorization header. The public download preserves that authentication flow and strengthens its handling: it requires nonempty inputs, validates owner/repository/scope formats, bounds connection and request time, checks successful HTTP status and nonempty token fields, and never prints response bodies. Signing or token errors fail closed, with additional validation before runner configuration.</p>
+<pre><code># This is the key authentication sequence, not the whole startup script.
+INSTALL_TOKEN=$(request_token \
+  "app/installations/${GITHUB_APP_INSTALLATION_ID}/access_tokens" \
+  "$JWT" "Installation token")
+REG_TOKEN=$(request_token "$REGISTRATION_PATH" "$INSTALL_TOKEN" \
+  "Runner registration token")
+
+./config.sh --unattended --name "runner-$(hostname)" \
+  --url "$RUNNER_URL" --token "$REG_TOKEN" \
+  "${GROUP_ARGS[@]}" --ephemeral --labels "$RUNNER_LABELS"
+exec ./run.sh</code></pre>
+<p>Use the complete downloaded script, not this isolated excerpt. Runner groups are passed only for organization scope. The script does not replace an existing runner registration. It unsets the private key and bootstrap tokens before executing workflow work, and uses <code>exec</code> to avoid an unnecessary outer shell. These are defensive improvements, not a guarantee of credential isolation from code sharing the same container and managed identity.</p>
+<h3>Build only an allowlisted context</h3>
+<p>Put only the Dockerfile, startup script, and the downloaded build-context allowlist renamed to <code>.dockerignore</code> in a dedicated image-build directory. Do not build from a directory containing a private key, repository history, backup archives, or application secrets. <code>.gitignore</code> alone does not constrain a Docker/ACR build context.</p>
+<p>Supply a supported runner release and its SHA-256 from the official <a href="https://github.com/actions/runner/releases">actions/runner releases</a>. The source used version 2.335.1; that is a historical value, not a current recommendation. The repaired Dockerfile requires an explicit version and verifies the archive before extracting it. The Azure CLI installer and Ubuntu base remain external build dependencies: review them and pin versions/digests under a maintained image policy.</p>
+<pre><code># On an approved private-connected build host with Docker and ACR push rights:
+az acr login --name "$ACR_NAME"
+docker build --build-arg RUNNER_VERSION="$RUNNER_VERSION" \
+  --build-arg RUNNER_SHA256="$RUNNER_SHA256" \
+  --tag "$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG" .
+docker push "$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG"</code></pre>
+<p>If using Docker-free ACR Tasks instead, configure a supported private-capable build path, such as an appropriately networked dedicated agent pool where available, and verify its access to the registry, source context, package feeds, and required platform endpoints. A plain hosted <code>az acr build</code> request is not proof that its worker can access a private-only registry.</p>
+<pre><code># Only after an approved compatible ACR Tasks agent pool is configured:
+: "${ACR_AGENT_POOL:?Set the reviewed agent pool}"
+az acr build --registry "$ACR_NAME" --agent-pool "$ACR_AGENT_POOL" \
+  --image "$IMAGE_NAME:$IMAGE_TAG" --file Dockerfile \
+  --build-arg RUNNER_VERSION="$RUNNER_VERSION" \
+  --build-arg RUNNER_SHA256="$RUNNER_SHA256" .</code></pre>
+<blockquote><p>The source temporarily enabled ACR public access and changed its default network action from Deny to Allow for a hosted build, then restored private-only access. It also observed that enabling public access alone did not override the Deny rule. These are historical, security-sensitive choices, not recommended defaults. Do not widen registry access or evade a policy merely to make a build pass.</p></blockquote>
+<p>After changing the Dockerfile or script, rebuild and push a new immutable tag or approved digest and update the job image. Editing a local Dockerfile does not change running containers. A stale image was an important source troubleshooting lesson, especially for <code>az: command not found</code>. This runner has no Docker daemon; the image-build host is a separate component, not a promise that arbitrary Docker builds work inside Container Apps Jobs.</p>
+
+<h2 id="create-container-environment">Create the internal environment and diagnostics</h2>
+<pre><code>az monitor log-analytics workspace create --resource-group "$RESOURCE_GROUP" \
+  --workspace-name "$LOG_WORKSPACE_NAME" --location "$LOCATION"
+LOG_CUSTOMER_ID=$(az monitor log-analytics workspace show \
+  --resource-group "$RESOURCE_GROUP" --workspace-name "$LOG_WORKSPACE_NAME" \
+  --query customerId -o tsv)
+LOG_SHARED_KEY=$(az monitor log-analytics workspace get-shared-keys \
+  --resource-group "$RESOURCE_GROUP" --workspace-name "$LOG_WORKSPACE_NAME" \
+  --query primarySharedKey -o tsv)
+
+az containerapp env create --name "$CAE_NAME" --resource-group "$RESOURCE_GROUP" \
+  --location "$LOCATION" --infrastructure-subnet-resource-id "$INFRA_SUBNET_ID" \
+  --internal-only true --enable-workload-profiles true \
+  --logs-workspace-id "$LOG_CUSTOMER_ID" --logs-workspace-key "$LOG_SHARED_KEY"
+unset LOG_SHARED_KEY</code></pre>
+<p>Run the diagnostic-key step only in the trusted administration session without shell tracing; a shared workspace key is sensitive. Organizations using another supported diagnostics configuration should substitute that approved approach. The workload-profiles environment normally includes a Consumption profile. Confirm the actual profile list and select Consumption for this job; an internal load balancer does not automatically imply Dedicated compute.</p>
+<p>Wait for successful environment provisioning before creating jobs. Verify DNS, firewall dependencies, and subnet delegation when environment provisioning stalls. Networking and diagnostic prerequisites apply to platform components as well as the runner container.</p>
+
+<h2 id="job-identity-bootstrap">Create the job identity before enabling event polling</h2>
+<p>The source first attempted to create an event job referencing private ACR with its new system-assigned identity. It encountered two bootstrap problems: image-pull validation before the identity had AcrPull, and an event job with no ScaleRules that would not accept later updates. It recovered by granting the role, updating the image, and adding scale metadata before the secret/auth reference.</p>
+<p>The public example uses a clearer staged variant: create a <strong>Manual</strong> job with a benign Microsoft sample image, obtain its system identity, grant scoped access, then configure the private image, secret, and a complete event rule before switching to Event. Do not start the bootstrap job. The sample image is only for identity creation; review or replace it with an approved bootstrap image if required by policy. A preauthorized user-assigned identity is another design option, but would require corresponding registry, secret-reference, and login changes.</p>
+<pre><code>az containerapp job create --name "$JOB_NAME" --resource-group "$RESOURCE_GROUP" \
+  --environment "$CAE_NAME" --trigger-type Manual \
+  --workload-profile-name Consumption --mi-system-assigned \
+  --replica-timeout 1800 --replica-retry-limit 1 \
+  --replica-completion-count 1 --parallelism 1 --cpu 0.5 --memory 1Gi \
+  --image mcr.microsoft.com/k8se/quickstart-jobs:latest
+
+JOB_ID=$(az containerapp job show --name "$JOB_NAME" --resource-group "$RESOURCE_GROUP" \
+  --query id -o tsv)
+JOB_PRINCIPAL_ID=$(az containerapp job show --name "$JOB_NAME" \
+  --resource-group "$RESOURCE_GROUP" --query identity.principalId -o tsv)
+test -n "$JOB_PRINCIPAL_ID"
+
+az role assignment create --assignee-object-id "$JOB_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal --role AcrPull --scope "$ACR_ID" -o none
+az role assignment create --assignee-object-id "$JOB_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal --role "Key Vault Secrets User" \
+  --scope "$KV_ID" -o none
+
+az containerapp job registry set --name "$JOB_NAME" --resource-group "$RESOURCE_GROUP" \
+  --server "$ACR_LOGIN_SERVER" --identity system
+az containerapp job secret set --name "$JOB_NAME" --resource-group "$RESOURCE_GROUP" \
+  --secrets "runner-app-key=keyvaultref:https://$KV_NAME.vault.azure.net/secrets/runner-app-key,identityref:system"
+
+az containerapp job update --name "$JOB_NAME" --resource-group "$RESOURCE_GROUP" \
+  --image "$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG" \
+  --set-env-vars \
+  "GITHUB_APP_ID=$GITHUB_APP_ID" \
+  "GITHUB_APP_INSTALLATION_ID=$GITHUB_APP_INSTALLATION_ID" \
+  "GITHUB_APP_PRIVATE_KEY=secretref:runner-app-key" \
+  "GITHUB_OWNER=$GITHUB_OWNER" "GITHUB_REPO=$GITHUB_REPO" \
+  "RUNNER_SCOPE=repo" "RUNNER_LABELS=container-app"</code></pre>
+<p>Allow for RBAC propagation and verify assignments rather than assuming a fixed sleep guarantees availability. With an ACR configured for repository-level ABAC permissions, use the appropriate repository-reader role/condition instead of blindly applying AcrPull. Scope vault reads to the intended secret set where your RBAC model permits. A successful management-plane update does not prove that the runtime can resolve the private endpoint or fetch its secret.</p>
+<table><thead><tr><th>Role</th><th>Example scope</th><th>When needed</th></tr></thead><tbody>
+<tr><td>AcrPull, or the applicable ABAC repository role</td><td>Registry or authorized repository.</td><td>Before private runner image pull.</td></tr>
+<tr><td>Key Vault Secrets User</td><td>Required vault/secrets.</td><td>Before secret resolution and GitHub App bootstrap.</td></tr>
+<tr><td>Website Contributor</td><td>The target Web App only.</td><td>Before the deployment workflow runs.</td></tr>
+</tbody></table>
+
+<h2 id="configure-keda">Configure the complete KEDA event rule</h2>
+<p>The scaler's owner, repository list, scope, App ID, installation ID, and labels must agree with the runner container and the installed GitHub App. In the baseline, the app installation can access the selected repository, the runner registers at that repository, and both runner and workflow use the custom label <code>container-app</code>.</p>
+<p>The following JSON construction and ARM update are a source-derived bootstrap repair, not a verbatim source command. They convert the already prepared Manual job to Event while supplying the complete event configuration in one update. They contain only IDs and secret references, never the PEM. Inspect the generated configuration and your job before applying it. Confirm that the API version and generic resource update are supported in your environment.</p>
+<pre><code>EVENT_CONFIG=$(jq -n \
+  --arg owner "$GITHUB_OWNER" --arg repo "$GITHUB_REPO" \
+  --arg app "$GITHUB_APP_ID" --arg installation "$GITHUB_APP_INSTALLATION_ID" \
+  '{
+    parallelism: 1,
+    replicaCompletionCount: 1,
+    scale: {
+      minExecutions: 0,
+      maxExecutions: 5,
+      pollingInterval: 30,
+      rules: [{
+        name: "queued-runner-work",
+        type: "github-runner",
+        metadata: {
+          owner: $owner,
+          runnerScope: "repo",
+          repos: $repo,
+          labels: "container-app",
+          targetWorkflowQueueLength: "1",
+          applicationID: $app,
+          installationID: $installation
+        },
+        auth: [{secretRef: "runner-app-key", triggerParameter: "appKey"}]
+      }]
+    }
+  }')
+az resource update --ids "$JOB_ID" --api-version 2024-03-01 \
+  --set properties.configuration.triggerType=Event \
+  "properties.configuration.eventTriggerConfig=$EVENT_CONFIG" \
+  --remove properties.configuration.manualTriggerConfig --output none</code></pre>
+<p>For subsequent changes to an existing valid Event job, the Container Apps CLI scale-rule arguments provide the familiar source configuration:</p>
+<pre><code>az containerapp job update --name "$JOB_NAME" --resource-group "$RESOURCE_GROUP" \
+  --min-executions 0 --max-executions 5 --polling-interval 30 \
+  --scale-rule-name queued-runner-work --scale-rule-type github-runner \
+  --scale-rule-metadata \
+  "owner=$GITHUB_OWNER" "runnerScope=repo" "repos=$GITHUB_REPO" \
+  "labels=container-app" "targetWorkflowQueueLength=1" \
+  "applicationID=$GITHUB_APP_ID" "installationID=$GITHUB_APP_INSTALLATION_ID" \
+  --scale-rule-auth appKey=runner-app-key</code></pre>
+<p>For organization mode, set both scopes to <code>org</code>, pass the chosen runner group to the container, and set <code>repos</code> to an explicit comma-separated list visible to that app installation. Do not change only the runner's environment variables and leave the scaler pointing at a different owner or scope.</p>
+<table><thead><tr><th>Setting</th><th>Baseline</th><th>Operational meaning</th></tr></thead><tbody>
+<tr><td>Polling interval</td><td>30 seconds.</td><td>Trade-off between queue responsiveness and API consumption; not a cold-start SLA.</td></tr>
+<tr><td>Target workflow queue length</td><td>1.</td><td>Scaler target for matching queued jobs, not a guarantee that the new container immediately claims a specific job.</td></tr>
+<tr><td>Minimum executions</td><td>0.</td><td>No minimum idle runner execution count.</td></tr>
+<tr><td>Maximum executions</td><td>5.</td><td>Bounded executions requested per polling interval as documented by the CLI; not by itself a global concurrency or spend cap.</td></tr>
+<tr><td>Parallelism / completion count</td><td>1 / 1.</td><td>One replica per execution and one successful completion required.</td></tr>
+<tr><td>Replica timeout / retry limit</td><td>1800 seconds / 1 retry.</td><td>Bounds a stuck replica and permits a retry; reconcile with workflow duration and idempotency.</td></tr>
+<tr><td>CPU / memory</td><td>0.5 CPU / 1 GiB.</td><td>A small starting point, not measured sizing for every build.</td></tr>
+</tbody></table>
+<p>Label filtering has KEDA-version-specific details, including default self-hosted/linux/x64 labels. Inspect the hosted scaler version and supported metadata before using optional filters or ETags. A mismatch can produce a zero metric or a runner that never receives the intended job, but not every mismatch yields exactly the same symptom.</p>
+<h3>Rate limits and repository filtering</h3>
+<p>GitHub App installation rate limits depend on the installation and account context; they are not universally 15,000 requests per hour. Consult the actual rate-limit response headers and GitHub documentation. KEDA can make several requests per repository and queued run, so even a seemingly moderate polling frequency can become expensive across many repositories. Avoid scanning the whole organization unnecessarily, stagger or consolidate equivalent scalers, tune polling, and use conditional-request options only where the managed scaler version supports them.</p>
+<p>A simple planning estimate is polling cycles per hour multiplied by repository/run/job enumeration requests per cycle, plus registration and other API traffic. This is an estimate, not a source measurement. Watch primary and secondary rate-limit responses and backoff behavior rather than increasing polling speed when queue detection is failing.</p>
+
+<h2 id="app-service-target">Prepare App Service and its deployment path</h2>
+<p>The source ultimately deployed through the job's system-assigned identity, not through the README's older publish-profile secret. This example uses a Linux App Service plan and Node 22, consistent with the later source target. Select an appropriate supported SKU/runtime for your environment; B1 below preserves the source's small demonstration tier and is not a production capacity recommendation.</p>
+<pre><code>az group create --name "$AZURE_RESOURCE_GROUP" --location "$LOCATION" -o none
+az appservice plan create --resource-group "$AZURE_RESOURCE_GROUP" \
+  --name "$APP_PLAN_NAME" --location "$LOCATION" --is-linux --sku B1
+az webapp create --resource-group "$AZURE_RESOURCE_GROUP" \
+  --plan "$APP_PLAN_NAME" --name "$AZURE_WEBAPP_NAME" --runtime "NODE:22-lts"
+az webapp config set --resource-group "$AZURE_RESOURCE_GROUP" \
+  --name "$AZURE_WEBAPP_NAME" --startup-file "npm start"
+
+# The supplied workflow uploads node_modules built on Linux.
+az webapp config appsettings set --resource-group "$AZURE_RESOURCE_GROUP" \
+  --name "$AZURE_WEBAPP_NAME" --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false -o none
+
+WEBAPP_ID=$(az webapp show --resource-group "$AZURE_RESOURCE_GROUP" \
+  --name "$AZURE_WEBAPP_NAME" --query id -o tsv)
+az role assignment create --assignee-object-id "$JOB_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal --role "Website Contributor" \
+  --scope "$WEBAPP_ID" -o none</code></pre>
+<p>There are two coherent package strategies. This download performs <code>npm ci</code> in the Linux runner and includes <code>node_modules</code>, so remote build is disabled. The source's earlier local zip deployment enabled <code>SCM_DO_BUILD_DURING_DEPLOYMENT=true</code> for server-side build. If choosing that alternative, upload source/manifests without prebuilt dependencies and allow the App Service build environment to reach its package feeds. Do not accidentally mix the two strategies. Native dependencies require careful Node/OS/runtime alignment beyond this small Express example.</p>
+<h3>Optional private App Service endpoint</h3>
+<p>The runner environment being internal does not make the target App Service private. If a private-only target is required, create an approved App Service private endpoint in a suitable subnet, link <code>privatelink.azurewebsites.net</code>, and confirm both the app and SCM records. The following extension to the source's SCM reachability discussion is a configuration example, not a claim that the source used a private target.</p>
+<pre><code>: "${WEBAPP_PE_NAME:?Set the target private endpoint name}"
+az network private-dns zone create --resource-group "$RESOURCE_GROUP" \
+  --name privatelink.azurewebsites.net
+az network private-dns link vnet create --resource-group "$RESOURCE_GROUP" \
+  --zone-name privatelink.azurewebsites.net --name app-link \
+  --virtual-network "$VNET_NAME" --registration-enabled false
+az network private-endpoint create --resource-group "$RESOURCE_GROUP" \
+  --name "$WEBAPP_PE_NAME" --vnet-name "$VNET_NAME" --subnet "$PE_SUBNET" \
+  --private-connection-resource-id "$WEBAPP_ID" --group-id sites \
+  --connection-name app-private-connection
+WEBAPP_DNS_ID=$(az network private-dns zone show --resource-group "$RESOURCE_GROUP" \
+  --name privatelink.azurewebsites.net --query id -o tsv)
+az network private-endpoint dns-zone-group create --resource-group "$RESOURCE_GROUP" \
+  --endpoint-name "$WEBAPP_PE_NAME" --name app-dns \
+  --private-dns-zone "$WEBAPP_DNS_ID" --zone-name app
+
+# After verifying private app and SCM access from authorized clients:
+az resource update --ids "$WEBAPP_ID" \
+  --set properties.publicNetworkAccess=Disabled -o none</code></pre>
+<p>A DNS-zone group normally manages the app and SCM records for this connection; verify both rather than assuming. If you deliberately retain a public SCM path, restrict target access to approved sources, including the expected firewall egress address, and apply organization policy. A role assignment alone cannot overcome a blocked deployment endpoint.</p>
+
+<h2 id="workflow-and-sample-files">Install the application and deployment workflow</h2>
+<p>Use the downloads as two separate contexts. For the runner image, use Dockerfile, start.sh, and the renamed <code>.dockerignore</code>. For the execution repository, place <code>server.js</code>, <code>package.json</code>, and <code>package-lock.json</code> at its root; rename <code>gitignore.txt</code> to <code>.gitignore</code>. Copy <code>deploy.yml</code> to <code>.github/workflows/deploy.yml</code> only in the approved execution repository after configuring its controls. The download file on this site does not automatically execute a workflow.</p>
+<p>The sample application listens on App Service's <code>PORT</code> or local port 8080. <code>GET /</code> returns a sanitized demonstration JSON response and <code>GET /health</code> returns <code>OK</code>. The timestamp is generated at request time; it is not a deployment timestamp. The source's hostname field is removed from the public example.</p>
+<pre><code># Run from the sample application root, not the runner-image directory.
+npm ci --omit=dev --ignore-scripts
+npm start
+# In another local terminal:
+curl --fail http://localhost:8080/health</code></pre>
+<p>The Express dependency range, lockfile versions/integrities, engine constraint, and source test command are preserved. Root package naming is generic, and dependency funding links are omitted. <code>npm test</code> only prints <code>no tests yet</code> and exits successfully. It is not a functional, integration, or security test. No dependency installation or deployment is needed just to read this article.</p>
+<h3>Required GitHub configuration</h3>
+<ul>
+<li>Set Actions variables <code>AZURE_SUBSCRIPTION_ID</code>, <code>AZURE_TENANT_ID</code>, <code>AZURE_RESOURCE_GROUP</code>, and <code>AZURE_WEBAPP_NAME</code>. These are intentionally empty until configured in your repository.</li>
+<li>Create the <code>deployment</code> GitHub environment before enabling the workflow. Configure allowed deployment branches and required reviewers according to your plan and policy; merely naming an environment is not a protection rule.</li>
+<li>Ensure the runner group/repository authorization and custom label permit only the intended workload.</li>
+<li>Review and pin action commit SHAs under an update policy. The example retains source action major versions for readability and changes the selected Node version to 22 to align with the later App Service target.</li>
+</ul>
+<p>The repaired workflow is manual-only. The source also ran on pushes to main; add that trigger only after branch protection and deployment approval rules are established. Do not add <code>pull_request_target</code> or untrusted fork workflows to a runner that can reach internal services or deploy through Azure identity.</p>
+<h3>Packaging and managed identity</h3>
+<p>The original deployment step zipped nearly the entire repository, excluding only <code>.git</code>. The public example instead packages an explicit allowlist: the application entry point, both package manifests, and freshly installed production dependencies, with additional key and environment-file exclusions. It does not package the runner startup script, image sources, workflow, backups, or a private key. Rebuild the archive cleanly rather than adding files to an older zip.</p>
+<pre><code>rm -f deployment.zip
+zip -q -r -y deployment.zip server.js package.json package-lock.json node_modules \
+  -x '*/.git/*' '*/.env' '*/.env.*' '*.pem' '*.key' '*.pfx' '*.p12'
+
+az login --identity --output none
+az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+actual_tenant=$(az account show --query tenantId --output tsv)
+test "${actual_tenant,,}" = "${AZURE_TENANT_ID,,}"
+az webapp deploy --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" \
+  --src-path deployment.zip --type zip --output none</code></pre>
+<p>The complete workflow also validates variables/tools, avoids persisting checkout credentials, limits the workflow token to contents read, serializes deployments, sets a workflow timeout, and clears the Azure CLI account cache afterward. Azure managed identity still remains available while the job runs; <code>az account clear</code> is not identity revocation. Subscription selection and tenant verification prevent silently deploying through a CLI default subscription. No publish profile or stored Azure client secret is needed.</p>
+<p>Any old publish profile belongs to the source's retired authentication approach. After migration and an approved rollback plan, remove unused GitHub secrets and rotate or revoke the underlying credentials as appropriate. Removing a GitHub secret alone does not revoke a previously exposed credential.</p>
+
+<h2 id="verify-run-flow">Validate one execution before increasing scale</h2>
+<ol>
+<li>First verify the target application independently from an approved network path. A local zip deployment proves the target deployment path only; it does not prove KEDA detection or runner execution.</li>
+<li>Dispatch a small trusted workflow using the same <code>runs-on</code> labels. Observe GitHub's Queued state and then the Container Apps execution list.</li>
+<li>Confirm that an execution starts, pulls the expected image, obtains the secret, registers a runner at the correct scope, and receives the intended job.</li>
+<li>Run the supplied deployment workflow. Check Node setup, locked dependency installation, the explicitly recognized test stub, identity login, and zip deployment as separate stages.</li>
+<li>From a client authorized for the target endpoint, verify the app and health route. Use an explicit version marker in a real application if you need to prove which revision is deployed; request timestamps alone are insufficient.</li>
+<li>Confirm the runner exits and does not accept a second job. Inspect stale registrations and failed/cancelled executions rather than assuming ephemeral cleanup always succeeds after forced termination.</li>
+</ol>
+<pre><code># Optional trusted runner-only smoke workflow, before allowing deployment:
+name: Runner connectivity smoke check
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: [self-hosted, container-app]
+    timeout-minutes: 5
+    steps:
+      - run: |
+          printf 'Runner job received.\n'
+          uname -s
+          command -v az
+          command -v zip
+</code></pre>
+<p>This reduced smoke check does not dump the environment, hostname, identity endpoints, or credentials. Successful runner registration is not enough: an idle runner may still have label/group incompatibility, and the deployment may still fail on Azure authentication or SCM connectivity.</p>
+
+<h2 id="monitoring-and-logs">Observe executions, scaler signals, and private networking</h2>
+<pre><code>az containerapp job execution list --name "$JOB_NAME" \
+  --resource-group "$RESOURCE_GROUP" -o table
+az containerapp job show --name "$JOB_NAME" --resource-group "$RESOURCE_GROUP" \
+  --query "{trigger:properties.configuration.triggerType,image:properties.template.containers[0].image}" \
+  -o json
+az containerapp job logs show --name "$JOB_NAME" \
+  --resource-group "$RESOURCE_GROUP" --tail 100</code></pre>
+<p>The logs command is extension/version-dependent and reads one execution, replica, and container. Use its current help to select the execution you are investigating rather than assuming a default returns the failed run. Correlate GitHub job timing, scaler messages, execution state, runner console output, firewall denies, and App Service deployment logs. Do not paste raw environment dumps, token responses, or subscription-specific logs into a public issue.</p>
+<p>For an environment using the source's custom Log Analytics tables, the following query shows recent runner container messages. Replace the local query parameter with your job name privately. Inspect your workspace schema because resource-specific tables and column names can differ.</p>
+<pre><code>let jobName = "&lt;job-name&gt;";
+ContainerAppConsoleLogs_CL
+| where TimeGenerated &gt; ago(30m)
+| where ContainerGroupName_s startswith jobName
+| project TimeGenerated, Log_s
+| order by TimeGenerated desc</code></pre>
+<p>Console logs help only after a container exists. Use environment/system logs for image pulls, Key Vault reference resolution, and scaler errors before startup. Review the actual available table and field names rather than assuming a query with no results proves no error occurred. Runner diagnostic files under its <code>_diag</code> directory need an explicit protected forwarding mechanism if you require them after the execution ends; stdout collection alone does not promise to archive every diagnostic file.</p>
+<ul>
+<li>Alert on sustained queue age, repeated failed executions, authentication errors, deprecated runner messages, and unusual execution growth.</li>
+<li>Check DNS responses from the relevant network context and compare with approved private endpoint addresses; do not publish those addresses.</li>
+<li>Inspect firewall application and network rule logs together. A GitHub allow rule does not explain a blocked managed identity or storage dependency.</li>
+<li>Review Log Analytics retention and ingestion volume. Workflow and runner logs may include source details and need access controls.</li>
+</ul>
+
+<h2 id="troubleshooting-lessons">Troubleshooting: what failed and how to isolate it</h2>
+<table><thead><tr><th>Symptom</th><th>Likely investigation</th><th>Corrective action</th></tr></thead><tbody>
+<tr><td>GitHub job remains queued; no execution.</td><td>Scaler owner, repo list, scope, label filtering, installation access, missing auth reference, or rate limits.</td><td>Compare all three label/scope locations and installation permissions. Inspect scaler/system logs before rebuilding the image.</td></tr>
+<tr><td>Metric reports zero despite queued work.</td><td>Filters do not match, the repository is inaccessible, queued work is outside the scaler's enumeration window, or API requests failed.</td><td>Check the managed scaler version and query behavior. Do not assume all queue visibility failures are label errors.</td></tr>
+<tr><td>Installation token request fails.</td><td>Wrong App ID or installation, malformed PEM, clock skew, an incorrectly configured authorization header, or denied outbound GitHub API access.</td><td>Preserve the JWT authorization flow, validate input without printing it, verify the installation and key pair, and inspect sanitized HTTP status and network telemetry.</td></tr>
+<tr><td>Registration token request fails.</td><td>Wrong repo/org API path or insufficient approved installation permissions.</td><td>Use Administration write for the repository endpoint or appropriate organization Self-hosted runners permission. Accept pending installation permission updates.</td></tr>
+<tr><td>Runner is registered but idle.</td><td>Custom labels, default labels, runner-group restrictions, or wrong registration scope.</td><td>Align the workflow and runner. Do not solve public-repository restrictions by opening a privileged group to untrusted code.</td></tr>
+<tr><td>Unable to pull image using managed identity system.</td><td>System identity was not yet granted access, role propagation is incomplete, ABAC mode differs, or private DNS/data endpoint access fails.</td><td>Complete the identity bootstrap, verify the correct image-pull role, then update/retry the intended image. Preserve private access controls.</td></tr>
+<tr><td>Event job requires configuration property ScaleRules.</td><td>Creation/update left an incomplete event configuration.</td><td>Use the staged Manual-to-Event bootstrap and supply the complete rule/auth reference before polling. An unauthenticated placeholder rule is not a finished deployment.</td></tr>
+<tr><td>Key Vault is denied despite a role assignment.</td><td>Wrong secret URI/identity, missing private endpoint/DNS, missing read role, or propagation delay.</td><td>Check network reachability and secret-reference resolution independently. Do not give permanent Secrets Officer rights to make reads work.</td></tr>
+<tr><td>Endpoint resolution or EOF involving login.microsoftonline.com.</td><td>In the source, the initial allowlist covered GitHub but missed Azure authentication.</td><td>Check DNS and the required Azure authentication/platform egress, including service-tag rules as documented. Private Key Vault connectivity does not bypass token acquisition.</td></tr>
+<tr><td>Managed identity returns HTTP 500 or invalid_scope.</td><td>The source saw identity failures behind incomplete platform rules; an incorrect resource/scope or identity configuration can also cause this symptom.</td><td>Check network denies, platform dependencies, CLI identity support, and requested token audience. Do not declare every invalid_scope error to be a firewall failure.</td></tr>
+<tr><td>az or zip is not found.</td><td>Runner image lacks a workflow prerequisite, or the job still uses an older image.</td><td>Install prerequisites at image build, rebuild/push, and update the image reference. Do not rely on unprivileged workflow sudo installation.</td></tr>
+<tr><td>Checkout, Node setup, npm, or artifact upload fails.</td><td>Missing FQDN/redirect/cache endpoints, DNS, package registry access, or proxy/TLS behavior.</td><td>Review current GitHub action communication requirements and narrow required additions. Verify codeload and release-asset destinations as well as github.com.</td></tr>
+<tr><td>Runner version is deprecated and cannot receive messages.</td><td>Old runner distribution or an unmaintained image.</td><td>Review a supported release, verify checksum, rebuild, and update the job. If disabling automatic updates, meet GitHub's required update window explicitly.</td></tr>
+<tr><td>ACR Tasks denies a client IP.</td><td>The build worker cannot reach the registry under its network policy.</td><td>Use an approved private-capable build path. The source's broad temporary public-allow workaround is not the default remediation.</td></tr>
+<tr><td>Deployment authentication succeeds but zip deployment fails.</td><td>Wrong subscription/target, missing Website Contributor scope, blocked SCM, private DNS, or App Service deployment policy.</td><td>Confirm tenant/subscription and target resource, then test the actual SCM path. Do not substitute publish-profile credentials for a networking diagnosis.</td></tr>
+<tr><td>Deployed app cannot find Express or fails startup.</td><td>Archive root layout, omitted node_modules with remote build disabled, incorrect startup command, or runtime mismatch.</td><td>Choose one build strategy, inspect the archive allowlist, and align the Node runtime. Verify PORT handling and App Service logs.</td></tr>
+<tr><td>Unexpected runner growth or repeated deployments.</td><td>Overlapping scalers, excessive polling, job retries, long queue-to-registration latency, or inappropriate execution settings.</td><td>Use explicit nonzero maximums, review per-poll limits and actual concurrent execution counts, serialize deployment, and design deployments to tolerate retries.</td></tr>
+</tbody></table>
+<p>The source's final notes report successful Node setup, dependency installation, the test stub, managed-identity login, zip deployment, and HTTP 200 application responses. Those observations establish the original implementation's reported sequence, not benchmark timings or a guarantee for this edited sample. Original screenshots and deployment inventories are deliberately not reproduced.</p>
+
+<h2 id="security-maintenance-cost">Trust boundaries, maintenance, and cost controls</h2>
+<h3>Separate trust levels before scaling</h3>
+<p>A self-hosted deployment runner is a privileged execution surface. Repository writers, mutable actions, dependency lifecycle scripts, and workflow changes can influence code executed inside it. The managed identity can access the Web App and authorized vault secrets; the VNet may expose internal services. Ephemeral compute reduces persistence between jobs but does not remove these powers during a job.</p>
+<ul>
+<li>Keep deployment repositories/workflows trusted and reviewed. Do not let an untrusted pull request execute on a runner holding production network access or identity.</li>
+<li>Use separate jobs, identities, GitHub App installations, runner groups, and network segments for materially different trust levels. Labels route work; they are not an authorization boundary.</li>
+<li>Restrict the App installation to required repositories and give Azure roles at the smallest practical scope. Review whether sharing one identity for secret reads and deployment meets your risk model.</li>
+<li>Rotate the GitHub App key with an overlap plan, update the Key Vault reference or version as appropriate, verify new executions and scaler authentication, then revoke the old key. Do not assume every component refreshes a versionless reference immediately.</li>
+<li>Forward protected diagnostics, review runner cleanup after failures, and avoid logging complete environments, secrets, JWTs, installation tokens, registration tokens, or publish profiles.</li>
+</ul>
+<h3>Maintain the image, not just the workflow</h3>
+<p>Schedule a reviewed image rebuild process, such as a weekly maintenance pipeline, that checks the Ubuntu base, runner release, Azure CLI, and required tools. The source illustrated a cron-triggered ACR task; its source authentication and worker networking must be designed separately for a private repository and registry. Do not paste a long-lived GitHub token into a public task command. Use an approved integration and secret store, then verify build results and promote a tested tag/digest to the job.</p>
+<p>Automatic runner updates are retained in the supplied registration behavior. They do not eliminate the need for image maintenance: repeatedly booting an old image costs time and may violate runner support requirements. Disabling updates is possible only with a deliberate compliant replacement cadence, not as a blanket rule that every disabled-update runner is unsupported.</p>
+<h3>Scale-to-zero compute is not a zero-cost architecture</h3>
+<table><thead><tr><th>Control</th><th>Benefit</th><th>What it does not guarantee</th></tr></thead><tbody>
+<tr><td>Consumption profile and minimum executions 0.</td><td>Avoid a permanently running minimum runner fleet.</td><td>Free Firewall, registry, private endpoints, public IP, logging, storage, or App Service plan.</td></tr>
+<tr><td>Execution bounds and concurrency settings.</td><td>Reduce runaway work and concurrent deployment conflicts.</td><td>A universal hard subscription budget or an exactly-once execution model.</td></tr>
+<tr><td>Measured CPU/memory sizing.</td><td>Avoid unnecessary resource allocation while meeting build needs.</td><td>That the demonstration's 0.5 CPU/1 GiB is adequate for real builds.</td></tr>
+<tr><td>Replica and workflow timeouts.</td><td>Limit stuck work and provide room for runner startup.</td><td>Successful graceful cleanup after forced termination.</td></tr>
+<tr><td>Firewall SKU and log-retention review.</td><td>Match security capabilities and observability to the workload.</td><td>That Standard and Premium differ only in throughput; inspect the required security features.</td></tr>
+</tbody></table>
+<p>Estimate all always-provisioned components, monitor actual execution counts and duration, set budget alerts, and measure queue-to-start time with your own workloads. The source provides implementation lessons, not a universal cost or latency benchmark.</p>
+
+<h2 id="official-references">Official references and compatibility checks</h2>
+<ul>
+<li><a href="https://techcommunity.microsoft.com/blog/azureinfrastructureblog/running-github-actions-runners-on-azure-container-apps-with-keda-autoscaling/4512980">Microsoft Tech Community: GitHub Actions runners on Container Apps with KEDA</a> provides the public background discussed by the source.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/container-apps/jobs">Container Apps jobs</a> and <a href="https://learn.microsoft.com/en-us/cli/azure/containerapp/job?view=azure-cli-latest">Container Apps job CLI</a> describe execution and configuration behavior.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/container-apps/networking">Container Apps networking</a> and <a href="https://learn.microsoft.com/en-us/azure/container-apps/firewall-integration">network security requirements</a> distinguish environment types and platform dependencies.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/container-registry/container-registry-private-link">ACR Private Link</a> and <a href="https://learn.microsoft.com/en-us/azure/key-vault/general/private-link-service">Key Vault Private Link</a> cover endpoint and DNS requirements.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/app-service/overview-private-endpoint">App Service private endpoints</a> explains app/SCM DNS and the distinction from VNet integration.</li>
+<li><a href="https://keda.sh/docs/2.18/scalers/github-runner/">KEDA GitHub runner scaler specification</a> documents metadata and API polling; verify which version the managed platform exposes.</li>
+<li><a href="https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app">Registering a GitHub App</a> and <a href="https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app">generating its JWT</a> cover App authentication.</li>
+<li><a href="https://docs.github.com/en/rest/actions/self-hosted-runners">GitHub runner REST endpoints</a> and <a href="https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api">REST API rate limits</a> are authoritative for permissions and quotas.</li>
+<li><a href="https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/communicating-with-self-hosted-runners">Communication with self-hosted runners</a> and <a href="https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/autoscaling-with-self-hosted-runners">autoscaling guidance</a> cover outbound endpoints, ephemeral runners, updates, and diagnostics.</li>
+</ul>

@@ -1,6 +1,6 @@
 {
     "edition":  "2026-09",
-    "topicCount":  10,
+    "topicCount":  11,
     "topics":  [
                    {
                        "sourceDocumentCount":  1,
@@ -71,6 +71,13 @@
                        "category":  "App Service",
                        "resourceCount":  0,
                        "slug":  "managed-instance"
+                   },
+                   {
+                       "sourceDocumentCount":  3,
+                       "title":  "Private GitHub Actions Runners on Azure Container Apps with KEDA",
+                       "category":  "GitHub",
+                       "resourceCount":  9,
+                       "slug":  "self-hosted-aca"
                    }
                ],
     "portalScreenshots":  [
@@ -130,6 +137,15 @@
                       "downloads/istio-gateway-api/current_env/internal-ingress.yaml",
                       "downloads/istio-gateway-api/current_env/internal-nginx-controller.yaml",
                       "downloads/istio-gateway-api/current_env/sample-app.yaml",
-                      "downloads/istio-gateway-api/tobe_env/gateway.yaml"
+                      "downloads/istio-gateway-api/tobe_env/gateway.yaml",
+                      "downloads/self-hosted-aca/deploy.yml",
+                      "downloads/self-hosted-aca/Dockerfile",
+                      "downloads/self-hosted-aca/dockerignore.txt",
+                      "downloads/self-hosted-aca/gitignore.txt",
+                      "downloads/self-hosted-aca/package.json",
+                      "downloads/self-hosted-aca/package-lock.json",
+                      "downloads/self-hosted-aca/sample-notes.txt",
+                      "downloads/self-hosted-aca/server.js",
+                      "downloads/self-hosted-aca/start.sh"
                   ]
 }

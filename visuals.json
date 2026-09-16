@@ -127,6 +127,24 @@
       "caption":"Source: operation/elapsed-time table below. These are individual source observations, not averages. Scale-in is excluded from this chart because it took hours and one observation did not converge within the recorded window."
     }
   },
+  "self-hosted-aca": {
+    "title": "Provision a runner only when a trusted job needs one",
+    "caption": "Logical control and access relationships, not a packet-level network diagram. KEDA polls GitHub and starts ephemeral ACA Jobs. Runner internet egress uses the reviewed Firewall/UDR path; ACR and Key Vault use separate private endpoints and managed identity. App Service deployment is a downstream example, not shown. Scale-to-zero runner compute does not eliminate shared infrastructure charges.",
+    "nodes": [
+      {"x":24,"y":72,"title":"GitHub Actions","detail":"Queued trusted jobs","icon":"client"},
+      {"x":275,"y":72,"title":"KEDA scaler","detail":"GitHub App authentication","icon":"tools"},
+      {"x":526,"y":72,"title":"Ephemeral runner","detail":"One ACA Job execution","icon":"cluster","accent":true},
+      {"x":24,"y":232,"title":"Azure Firewall","detail":"Reviewed egress rules","icon":"shield"},
+      {"x":526,"y":232,"title":"ACR + Key Vault","detail":"Private endpoints + identity","icon":"registry"}
+    ],
+    "edges": [
+      {"d":"M275 112 H194","x":234,"y":100,"label":"poll queue","dashed":true},
+      {"d":"M445 112 H526","x":484,"y":100,"label":"start job","dashed":true},
+      {"d":"M611 152 V232","x":655,"y":195,"label":"private access"},
+      {"d":"M526 132 H482 V192 H109 V232","x":326,"y":180,"label":"runner outbound"},
+      {"d":"M109 232 V152","x":153,"y":216,"label":"HTTPS"}
+    ]
+  },
   "managed-instance": {
     "title": "One plan, distinct application endpoints",
     "caption": "Inbound private endpoints are app-scoped; the Managed Instance boundary and outbound VNet integration are plan-scoped. Two apps do not share a plan-level private endpoint.",

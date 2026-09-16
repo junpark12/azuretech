@@ -1,0 +1,32 @@
+{
+  "slug": "self-hosted-aca",
+  "category": "GitHub",
+  "title": "Private GitHub Actions Runners on Azure Container Apps with KEDA",
+  "summary": "Build ephemeral GitHub App-authenticated runners with private service access, controlled egress, and managed-identity App Service deployment.",
+  "bodyFile": "self-hosted-aca.html",
+  "sourceDocuments": [
+    "GitHub Actions Runners on Azure Container Apps with KEDA: Private Networking and GitHub App Authentication",
+    "Express Deployment Sample: Runner Image, Startup Script, Managed-Identity Workflow, and Dependency Lockfile",
+    "Implementation Notes: Private Endpoint Bootstrap, Firewall Troubleshooting, and End-to-End Deployment"
+  ],
+  "downloads": [
+    {"path":"downloads/self-hosted-aca/sample-notes.txt","label":"Sample setup and change notes","description":"File layout, required variables, source-to-example changes, trust boundaries, and limitations."},
+    {"path":"downloads/self-hosted-aca/Dockerfile","label":"Runner Dockerfile","description":"Non-root Ubuntu runner image with Azure CLI, zip, and required release checksum verification."},
+    {"path":"downloads/self-hosted-aca/start.sh","label":"GitHub App runner startup script","description":"Preserved GitHub App JWT flow with stronger input validation, bounded HTTP requests, token checks, and ephemeral registration."},
+    {"path":"downloads/self-hosted-aca/dockerignore.txt","label":"Image build-context allowlist","description":"Rename to .dockerignore in the dedicated image directory; permits only Dockerfile and start.sh."},
+    {"path":"downloads/self-hosted-aca/deploy.yml","label":"Managed-identity deployment workflow","description":"Manual-only example for an approved execution repository, with subscription selection and restricted packaging."},
+    {"path":"downloads/self-hosted-aca/server.js","label":"Express application","description":"Complete sanitized Node application with a JSON route and health endpoint."},
+    {"path":"downloads/self-hosted-aca/package.json","label":"Application package manifest","description":"Original Express dependency range and explicitly identified test stub, with generic package metadata."},
+    {"path":"downloads/self-hosted-aca/package-lock.json","label":"Matching dependency lockfile","description":"Preserved dependency versions and integrity hashes; generic root name and omitted funding links."},
+    {"path":"downloads/self-hosted-aca/gitignore.txt","label":"Sample repository ignore rules","description":"Rename to .gitignore; excludes dependencies, environment files, keys, and deployment archives."}
+  ],
+  "omissions": [
+    "Original architecture SVG and five GitHub/Azure screenshots are omitted: App installation list, permission update request, new-permission approval, workflow run result, and Container Apps execution history.",
+    "Personal GitHub owners and repositories, App and installation IDs, Azure subscription/tenant/client/principal identifiers, resource inventories, actual private IP ranges, deployed hostnames, local paths, and execution/log identifiers are not published.",
+    "Historical deployment logs, original response payloads, private source URLs, commit history, original archives, and the unmerged workflow patch are not distributed; operational findings are restated in English.",
+    "Obsolete publish-profile extraction and secret-registration commands are replaced by the actual managed-identity deployment approach.",
+    "Public-access enable/disable sequences for Key Vault and ACR are described as historical, security-sensitive choices rather than offered as recommended executable defaults.",
+    "Source claims of universally free idle infrastructure, universal 15,000-request GitHub App limits, complete isolation from internal-only mode, and a VNetPeering UDR next-hop command are corrected rather than repeated.",
+    "The sample's instance hostname response field and informal response text are omitted; dependency funding URLs are omitted without changing dependency resolution or integrity metadata."
+  ]
+}

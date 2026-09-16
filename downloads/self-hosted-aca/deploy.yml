@@ -1,0 +1,87 @@
+name: Deploy sample through an ephemeral runner
+
+# Copy to .github/workflows/deploy.yml only in an approved execution repository.
+# Configure the deployment environment and restrict its allowed branches first.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sample-app-deployment
+  cancel-in-progress: false
+
+env:
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+  NODE_VERSION: '22.x'
+
+jobs:
+  build-and-deploy:
+    environment: deployment
+    runs-on: [self-hosted, container-app]
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout approved source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Validate configuration and image prerequisites
+        run: |
+          set -euo pipefail
+          for name in AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID AZURE_RESOURCE_GROUP AZURE_WEBAPP_NAME; do
+            test -n "${!name:-}" || { echo "Missing variable: $name" >&2; exit 1; }
+          done
+          command -v az >/dev/null
+          command -v zip >/dev/null
+
+      - name: Install locked production dependencies
+        run: npm ci --omit=dev --ignore-scripts
+
+      - name: Run the source sample test command
+        # The supplied command is only a stub, not an application test suite.
+        run: npm test
+
+      - name: Package only the application allowlist
+        run: |
+          set -euo pipefail
+          rm -f deployment.zip
+          zip -q -r -y deployment.zip server.js package.json package-lock.json node_modules \
+            -x '*/.git/*' '*/.env' '*/.env.*' '*.pem' '*.key' '*.pfx' '*.p12'
+          unzip -l deployment.zip
+
+      - name: Deploy with the runner managed identity
+        run: |
+          set +x
+          set -euo pipefail
+          az login --identity --output none
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          actual_tenant=$(az account show --query tenantId --output tsv)
+          test "${actual_tenant,,}" = "${AZURE_TENANT_ID,,}" || {
+            echo "Managed identity tenant does not match the configured tenant." >&2
+            exit 1
+          }
+          az webapp deploy \
+            --subscription "$AZURE_SUBSCRIPTION_ID" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --src-path deployment.zip --type zip --output none
+
+      - name: Clear CLI account cache
+        if: always()
+        run: |
+          if command -v az >/dev/null; then
+            az account clear
+          fi

@@ -1,0 +1,89 @@
+EPHEMERAL RUNNER AND APP SERVICE SAMPLE
+
+These are sanitized, repaired examples, not the original deployment archive.
+They contain no credentials, infrastructure IDs, original endpoints, or images.
+No cloud deployment or container image build was performed for this publication.
+
+LAYOUT
+Use a dedicated image-build directory containing Dockerfile, start.sh, and
+dockerignore.txt renamed to .dockerignore. Preserve LF line endings in start.sh.
+Supply RUNNER_VERSION and RUNNER_SHA256 from the official actions/runner release.
+The source used runner 2.335.1; that is historical, not a current recommendation.
+Do not upload private keys or repository history as a build context.
+
+Use a separate execution repository whose root contains server.js, package.json,
+and package-lock.json. Rename gitignore.txt to .gitignore. Copy deploy.yml to
+.github/workflows/deploy.yml only after reviewing the workflow and its trust
+boundary. Its location in this website's downloads does not enable Actions.
+No runner Dockerfile is used to host the web application: App Service hosts the
+Node application, while the Dockerfile builds the GitHub Actions runner.
+
+Local sample use: npm ci --omit=dev --ignore-scripts, then npm start.
+GET / returns demonstration JSON. GET /health returns OK.
+The timestamp is the request time, NOT a persisted deployment timestamp.
+npm test prints "no tests yet" and exits successfully. It is only a source stub.
+Dependencies and lockfile resolutions are preserved; this is not a dependency
+security audit. Node 22 is selected for the repaired workflow and target runtime.
+
+REQUIRED CONFIGURATION
+Container job: GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_OWNER, and
+GITHUB_APP_PRIVATE_KEY injected from a Key Vault-backed Container Apps secret.
+For repository scope also set GITHUB_REPO. RUNNER_SCOPE defaults to repo.
+RUNNER_LABELS defaults to container-app. RUNNER_GROUP applies only to org scope.
+Never paste key contents into a workflow, Dockerfile, public file, or log.
+
+GitHub repository Actions variables: AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID,
+AZURE_RESOURCE_GROUP, AZURE_WEBAPP_NAME. No publish profile secret is used.
+Create and protect the GitHub deployment environment named deployment before
+enabling this workflow. Configure reviewers and allowed branches as supported by
+your GitHub plan. It is manual-only; add trusted-main push triggers deliberately.
+Review/pin action commit SHAs under your dependency-update policy.
+
+Grant the job identity image-pull rights on ACR, Key Vault Secrets User on the
+appropriate vault/secrets, and Website Contributor on the target Web App only.
+If ACR uses repository-level ABAC permissions, use the corresponding repository
+reader role instead of assuming AcrPull applies.
+Set the App Service Linux runtime to a supported Node 22 release, startup to
+npm start, and SCM_DO_BUILD_DURING_DEPLOYMENT=false for this prebuilt dependency
+package. Confirm SCM private DNS and network reachability from the runner.
+
+CHANGES FROM THE SOURCE
+- Preserved the source's existing GitHub App JWT token-exchange authorization
+  flow; improvements strengthen validation and error handling, not a broken header.
+- Added required-input checks, scope checks, bounded HTTP requests, status/token
+  validation, pipefail, no response-body logging, and secret environment cleanup.
+- Limited runner groups to org scope, defaulted to repository scope, removed
+  replacement of existing runners, and used exec for runner process startup.
+- Preserved non-root operation and the snapshot's Azure CLI/zip prerequisites.
+  Required an explicit runner version and verified SHA-256 before extraction.
+  Made installer/download failures fatal. The official CLI installer remains a
+  build-time external dependency; pin/review it for production reproducibility.
+- An archived, unmerged proposal installed az/zip using sudo inside deployment
+  jobs. That proposal is NOT represented as merged and is not included here.
+  The supplied local snapshot already installs these tools in the runner image.
+- Replaced obsolete README publish-profile guidance with managed identity.
+- Added explicit subscription selection and tenant verification, protected
+  deployment environment reference, manual trigger, read-only GitHub token,
+  credential-free checkout persistence, and deployment concurrency control.
+- Replaced whole-repository zip with server.js/package manifests/node_modules
+  allowlisting and key/.env exclusions. Added a minimal image context allowlist.
+- Kept the original Express dependency range, resolved versions, integrity hashes,
+  engine constraint, and test stub. Renamed package metadata and removed only
+  funding links from the lockfile; no package dependency versions were updated.
+- Removed hostname from the public sample response and translated comments.
+
+LIMITATIONS AND TRUST
+Untrusted workflows can access the runner's network and managed identity.
+Unsetting a key is defense in depth, not isolation: the job identity can still
+read authorized vault secrets, and same-container processes are not a boundary.
+Do not run fork pull requests or unreviewed workflows on this deployment runner.
+Use separate App installations, identities, jobs, groups, and networks for
+different trust levels. Avoid public repositories for privileged deployment.
+Ephemeral registration does not provide a guaranteed exactly-once workflow
+execution model or guarantee cleanup after forced termination. Monitor failures
+and stale registrations. Forward runner diagnostics to protected storage.
+The 25-minute workflow timeout leaves startup time within a 30-minute replica
+timeout, but adjust both for real builds. Five max executions is a per-polling
+configuration, not a guaranteed global concurrency or billing limit.
+Do not build images inside this runner without a separately designed build
+service; this sample has no Docker daemon or privileged Docker-in-Docker setup.

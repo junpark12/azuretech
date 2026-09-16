@@ -1,0 +1,17 @@
+{
+  "name": "ephemeral-runner-webapp-sample",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Express deployment sample for an ephemeral GitHub Actions runner on Azure Container Apps",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"no tests yet\" && exit 0"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

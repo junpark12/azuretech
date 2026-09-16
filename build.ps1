@@ -2,7 +2,7 @@ param([switch]$AllowPartial)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $output = Join-Path $root 'docs'
-$expected = @('acr-streaming', 'ai-gateway', 'ai-gateway-existing', 'cilium-network-policy', 'codex', 'envoy-gateway', 'istio-gateway-api', 'translation-performance', 'ase-frontend-scaling', 'managed-instance')
+$expected = @('acr-streaming', 'ai-gateway', 'ai-gateway-existing', 'cilium-network-policy', 'codex', 'envoy-gateway', 'istio-gateway-api', 'translation-performance', 'ase-frontend-scaling', 'managed-instance', 'self-hosted-aca')
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 function Encode([string]$value) { [System.Net.WebUtility]::HtmlEncode($value) }
 . (Join-Path $root 'visuals.ps1')
@@ -37,7 +37,7 @@ $topics = @(Get-ChildItem (Join-Path $root 'content') -Filter '*.json' | ForEach
 } | Sort-Object category, title)
 if (@($topics.slug | Select-Object -Unique).Count -ne $topics.Count) { throw 'Duplicate topic slug.' }
 if (-not $AllowPartial -and $topics.Count -ne $expected.Count) {
-    throw "Expected 10 topics; found $($topics.Count). Missing: $($expected | Where-Object { $_ -notin $topics.slug })"
+    throw "Expected $($expected.Count) topics; found $($topics.Count). Missing: $($expected | Where-Object { $_ -notin $topics.slug })"
 }
 foreach ($image in $portalScreenshots.images) {
     if ($image.path -notmatch '^assets/portal/[a-z0-9-]+\.png$') { throw "Invalid portal image path: $($image.path)" }
@@ -104,7 +104,7 @@ $categories = @($topics.category | Select-Object -Unique)
 $filterButtons = ($categories | ForEach-Object { '<button type="button" class="filter" data-filter="' + (Encode $_) + '" aria-pressed="false">' + (Encode $_) + '</button>' }) -join ''
 $index = @"
 <main id="main" class="home">
-<section class="hero"><div class="hero-copy"><p class="eyebrow">AZURE / APPLIED ENGINEERING</p><h1>From investigation<br>to implementation.</h1><p class="lead">Practical field notes on AI gateways, Kubernetes, and App Service. Procedures, measured results, and the caveats that matter.</p></div><div class="hero-stats" aria-label="Collection overview"><div><strong>$($topics.Count.ToString('00'))</strong><span>topic guides</span></div><div><strong>$($categories.Count.ToString('00'))</strong><span>technical areas</span></div><p>English guides<br>Parameterized examples<br>Source-derived downloads</p></div></section>
+<section class="hero"><div class="hero-copy"><p class="eyebrow">AZURE / APPLIED ENGINEERING</p><h1>From investigation<br>to implementation.</h1><p class="lead">Practical field notes on AI gateways, Kubernetes, App Service, and GitHub automation. Procedures, measured results, and the caveats that matter.</p></div><div class="hero-stats" aria-label="Collection overview"><div><strong>$($topics.Count.ToString('00'))</strong><span>topic guides</span></div><div><strong>$($categories.Count.ToString('00'))</strong><span>technical areas</span></div><p>English guides<br>Parameterized examples<br>Source-derived downloads</p></div></section>
 <aside class="editorial-note"><strong>Read before you deploy.</strong> Results describe the original test environments, not service guarantees. Replace placeholders locally. Check current support, pricing, and permissions before using any example.</aside>
 <section aria-labelledby="browse-title"><div class="section-heading"><div><p class="eyebrow">THE COLLECTION</p><h2 id="browse-title">Explore the field notes</h2></div><p id="result-count" role="status">$($topics.Count) topics</p></div>
 <div class="search-controls"><label for="search">Search topics<input id="search" type="search" placeholder="Try gateway, scaling, private endpoint..." autocomplete="off"></label><div class="filters" role="group" aria-label="Filter by technical area"><button type="button" class="filter active" data-filter="All" aria-pressed="true">All topics</button>$filterButtons</div></div>

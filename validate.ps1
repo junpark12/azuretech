@@ -3,12 +3,15 @@ $root = Join-Path $PSScriptRoot 'docs'
 $manifest = Get-Content (Join-Path $root 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $portal = Get-Content (Join-Path $PSScriptRoot 'portal-screenshots.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Add-Type -AssemblyName System.Drawing
-if ($manifest.topicCount -ne 10) { throw 'The public edition must contain exactly 10 topics.' }
+Add-Type -AssemblyName System.Web.Extensions
+$jsonParser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+if ($manifest.topicCount -ne 11) { throw 'The public edition must contain exactly 11 topics.' }
+if (@($manifest.topics | Where-Object { $_.slug -eq 'self-hosted-aca' -and $_.category -eq 'GitHub' }).Count -ne 1) { throw 'The GitHub ACA runner topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.category -eq 'App Modernization' }).Count) { throw 'Excluded subject present.' }
 $files = @(Get-ChildItem $root -File -Recurse -Force)
 $problems = New-Object 'System.Collections.Generic.List[string]'
 $htmlFiles = @($files | Where-Object { $_.Extension -eq '.html' })
-if ($htmlFiles.Count -ne 11) { $problems.Add("Expected 11 HTML files, found $($htmlFiles.Count).") }
+if ($htmlFiles.Count -ne 12) { $problems.Add("Expected 12 HTML files, found $($htmlFiles.Count).") }
 $guidPattern = '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'
 $publicRoleIds = @('5e0bd9bd-7b93-4f28-af87-19fc36ad61bd') # Cognitive Services OpenAI User.
 $checks = @{
@@ -42,7 +45,7 @@ foreach ($file in $files) {
         if (-not $endFound -or $offset -ne $bytes.Length) { $problems.Add("Invalid PNG boundary or trailing data: $relative") }
         continue
     }
-    if ($file.Extension -notin @('.html','.css','.js','.json','.xml','.yaml','.yml','.py','.http','.sh','.ps1','.bicep','.txt','.toml','.kql','.promql')) {
+    if ($file.Name -notin @('Dockerfile','.gitignore','.dockerignore') -and $file.Extension -notin @('.html','.css','.js','.json','.xml','.yaml','.yml','.py','.http','.sh','.ps1','.bicep','.txt','.toml','.kql','.promql')) {
         if ($file.Name -ne '.nojekyll') { $problems.Add("Unreviewed file type: $($file.Name)") }
         continue
     }
@@ -56,7 +59,8 @@ foreach ($file in $files) {
         if ($text -match $check.Value) { $problems.Add("$($file.Name): $($check.Key)") }
     }
     if ($file.Extension -eq '.json') {
-        try { $null = $text | ConvertFrom-Json } catch { $problems.Add("$($file.Name): invalid JSON: $($_.Exception.Message)") }
+        # npm lockfiles use an empty-string package key, unsupported by PowerShell 5's object conversion.
+        try { $null = $jsonParser.DeserializeObject($text) } catch { $problems.Add("$($file.Name): invalid JSON: $($_.Exception.Message)") }
     }
     if ($file.Extension -eq '.xml') {
         try { $null = [xml]$text } catch { $problems.Add("$($file.Name): invalid XML: $($_.Exception.Message)") }
@@ -74,7 +78,7 @@ foreach ($file in $htmlFiles) {
         if ($tag.Value -notmatch 'alt="[^"]+"' -or $tag.Value -notmatch 'width="\d+"' -or $tag.Value -notmatch 'height="\d+"') { $problems.Add("$($file.Name): missing image accessibility/dimensions.") }
     }
     $svgs = [regex]::Matches($html, '<svg\b.*?</svg>', 'Singleline')
-    $expectedSvgCount = if ($file.Name -eq 'index.html') { 10 } elseif ($file.BaseName -in @('translation-performance','ase-frontend-scaling')) { 2 } else { 1 }
+    $expectedSvgCount = if ($file.Name -eq 'index.html') { $manifest.topicCount } elseif ($file.BaseName -in @('translation-performance','ase-frontend-scaling')) { 2 } else { 1 }
     if ($svgs.Count -ne $expectedSvgCount) { $problems.Add("$($file.Name): expected $expectedSvgCount visual(s), found $($svgs.Count).") }
     foreach ($svg in $svgs) {
         try { $null = [xml]$svg.Value } catch { $problems.Add("$($file.Name): malformed SVG.") }
@@ -124,4 +128,4 @@ foreach ($image in $portal.images) {
     }
 }
 if ($problems.Count) { throw ($problems -join "`n") }
-Write-Output "Validated 10 topic pages, index, $($manifest.resources.Count) resources, local links, anchors, JSON/XML, language, and publication patterns."
+Write-Output "Validated $($manifest.topicCount) topic pages, index, $($manifest.resources.Count) resources, local links, anchors, JSON/XML, language, and publication patterns."
