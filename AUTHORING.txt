@@ -15,6 +15,9 @@ Layout
   preview.ps1           Loopback-only preview server
   visuals.json          English conceptual diagrams and measured chart data
   visuals.ps1           Build-time inline SVG renderer (no remote images)
+  portal-screenshots.json Reviewed screenshot placement, captions and SHA256
+  portal-screenshots.ps1 Build-time screenshot renderer and image allowlist
+  assets\portal\        Cropped, permanently redacted English portal captures
 
 Build
   powershell.exe -NoProfile -File .\build.ps1
@@ -57,6 +60,19 @@ Visuals
   values are eight-scenario means; ASE scale-out values are individual runs.
   Do not add invented before/after numbers for topics without measurements.
   Original source screenshots are not used.
+
+Portal screenshots
+  Captures dated 2026-09-16 show an available environment, not the original
+  experiments. Captions state differences (for example, Node Subnet versus
+  Overlay, nonmatching circuit-breaker settings, or absent image referrers).
+  No resource creation or configuration changes were made for screenshots.
+  Account headers and resource URLs are excluded. Identifiers are blacked out
+  in the PNG pixels, not hidden by page CSS. Image metadata is not retained.
+  Always inspect every image visually after masking; element positions can
+  differ from their DOM child index. Update the reviewed SHA256 only after
+  checking the resulting pixels. The builder refuses unreviewed PNGs.
+  Keep source screenshots containing identifiers out of this repository.
+  New screenshots must be approved for public release before committing.
 
 Public-content safeguards
   Never copy source repositories wholesale into this public repository.

@@ -6,6 +6,7 @@ $expected = @('acr-streaming', 'ai-gateway', 'ai-gateway-existing', 'cilium-netw
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 function Encode([string]$value) { [System.Net.WebUtility]::HtmlEncode($value) }
 . (Join-Path $root 'visuals.ps1')
+. (Join-Path $root 'portal-screenshots.ps1')
 function Write-Utf8([string]$path, [string]$value) {
     [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path)) | Out-Null
     [System.IO.File]::WriteAllText($path, $value, $utf8)
@@ -38,12 +39,21 @@ if (@($topics.slug | Select-Object -Unique).Count -ne $topics.Count) { throw 'Du
 if (-not $AllowPartial -and $topics.Count -ne $expected.Count) {
     throw "Expected 10 topics; found $($topics.Count). Missing: $($expected | Where-Object { $_ -notin $topics.slug })"
 }
+foreach ($image in $portalScreenshots.images) {
+    if ($image.path -notmatch '^assets/portal/[a-z0-9-]+\.png$') { throw "Invalid portal image path: $($image.path)" }
+    Test-PortalImage $image.path
+}
+foreach ($file in Get-ChildItem (Join-Path $root 'assets') -Recurse -File) {
+    if ($file.Extension -eq '.png') {
+        Test-PortalImage ('assets/' + $file.FullName.Substring((Join-Path $root 'assets').Length + 1).Replace('\','/'))
+    }
+}
 if (Test-Path $output) {
     # Only this generated directory is replaced; source and downloads remain untouched.
     Remove-Item -LiteralPath $output -Recurse -Force
 }
 [System.IO.Directory]::CreateDirectory((Join-Path $output 'assets')) | Out-Null
-Copy-Item (Join-Path $root 'assets\*') (Join-Path $output 'assets')
+Copy-Item (Join-Path $root 'assets\*') (Join-Path $output 'assets') -Recurse
 $theme = @'
 <script>
   (() => {
@@ -137,7 +147,7 @@ foreach ($topic in $topics) {
 <article class="article"><header class="article-header"><p class="eyebrow">$(Encode $topic.category) / FIELD NOTE</p><h1>$(Encode $topic.title)</h1><p class="lead">$(Encode $topic.summary)</p><div class="article-meta"><span>English edition</span><span>Parameterized examples</span><span>September 2026</span></div></header>
 <aside class="editorial-note"><strong>Environment-specific evidence.</strong> Measurements and preview behavior reflect the source investigation. They are not current service guarantees. All configuration values must be supplied for your own environment.</aside>
 $(Topic-Diagram $topic.slug)
-<div class="article-body">$(Topic-Chart $topic.slug $topic.bodyHtml)<h2 id="resources">Resources</h2>$resourceSection<h2 id="editorial-notes">Editorial notes</h2><p>This page consolidates the following source documents into an English technical guide:</p><ul>$sourceTitles</ul><ul>$omissions</ul><p>No original credentials or private repository links are included. Do not put populated configuration files or copied production outputs back into this public site.</p></div>
+<div class="article-body">$(Add-PortalScreenshots $topic.slug (Topic-Chart $topic.slug $topic.bodyHtml))<h2 id="resources">Resources</h2>$resourceSection<h2 id="editorial-notes">Editorial notes</h2><p>This page consolidates the following source documents into an English technical guide:</p><ul>$sourceTitles</ul><ul>$omissions</ul><p>No original credentials or private repository links are included. Do not put populated configuration files or copied production outputs back into this public site.</p></div>
 </article></main>
 "@
     Write-Utf8 (Join-Path $output "topics\$($topic.slug).html") (Page $topic.title $topic.summary '../' $article)
@@ -148,6 +158,7 @@ $manifest = @{
     topicCount = $topics.Count
     topics = @($topics | ForEach-Object { @{ slug = $_.slug; title = $_.title; category = $_.category; sourceDocumentCount = @($_.sourceDocuments).Count; resourceCount = @($_.downloads).Count } })
     resources = @($resourceManifest | Sort-Object -Unique)
+    portalScreenshots = @($portalScreenshots.images | ForEach-Object { @{ id=$_.id; topic=$_.topic; path=$_.path; capturedOn=$portalScreenshots.capturedOn } })
 }
 Write-Utf8 (Join-Path $output 'manifest.json') ($manifest | ConvertTo-Json -Depth 6)
 Write-Output "Built $($topics.Count) topics and $($resourceManifest.Count) resource links in $output"

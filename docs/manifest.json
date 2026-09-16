@@ -73,6 +73,38 @@
                        "slug":  "managed-instance"
                    }
                ],
+    "portalScreenshots":  [
+                              {
+                                  "capturedOn":  "2026-09-16",
+                                  "path":  "assets/portal/apim-backends.png",
+                                  "id":  "apim-backends",
+                                  "topic":  "ai-gateway-existing"
+                              },
+                              {
+                                  "capturedOn":  "2026-09-16",
+                                  "path":  "assets/portal/apim-managed-identity.png",
+                                  "id":  "apim-managed-identity",
+                                  "topic":  "ai-gateway-existing"
+                              },
+                              {
+                                  "capturedOn":  "2026-09-16",
+                                  "path":  "assets/portal/apim-circuit-breaker.png",
+                                  "id":  "apim-circuit-breaker",
+                                  "topic":  "ai-gateway-existing"
+                              },
+                              {
+                                  "capturedOn":  "2026-09-16",
+                                  "path":  "assets/portal/aks-network-profile.png",
+                                  "id":  "aks-network-profile",
+                                  "topic":  "cilium-network-policy"
+                              },
+                              {
+                                  "capturedOn":  "2026-09-16",
+                                  "path":  "assets/portal/acr-artifact-referrers.png",
+                                  "id":  "acr-artifact-referrers",
+                                  "topic":  "acr-streaming"
+                              }
+                          ],
     "resources":  [
                       "downloads/ai-gateway/gateway-requests.http",
                       "downloads/ai-gateway/resource-commands.sh",

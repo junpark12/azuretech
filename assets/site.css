@@ -169,6 +169,13 @@ pre { padding: 24px; margin: 24px 0; border: 1px solid var(--cp-border); border-
 .chart-label { fill: var(--cp-text); font-size: 13px; text-anchor: end; }
 .chart-value { fill: var(--cp-text); font-size: 13px; font-weight: 650; }
 .chart-bar { fill: var(--cp-accent); }
+.portal-capture { margin: 28px 0 36px; border: 1px solid var(--cp-border); border-radius: 16px; overflow: hidden; background: var(--cp-bg-elevated); }
+.portal-capture .visual-heading h3 { margin: 0; }
+.portal-capture .portal-navigation { font-size: 12px; line-height: 1.8; color: var(--cp-text-muted); }
+.portal-image-link { display: block; margin: 20px; border: 1px solid var(--cp-border); border-radius: 0.625rem; overflow: hidden; }
+.portal-image-link img { display: block; width: 100%; height: auto; }
+.portal-capture figcaption { padding: 16px 24px; border-top: 1px solid var(--cp-border); background: var(--cp-surface); font-size: 13px; line-height: 1.8; color: var(--cp-text-muted); }
+.capture-meta { display: block; margin-bottom: 8px; color: var(--cp-accent); font-size: 11px; font-weight: 600; }
 @media (max-width: 1060px) {
   .topic-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topic-layout { grid-template-columns: 200px minmax(0, 1fr); gap: 32px; }

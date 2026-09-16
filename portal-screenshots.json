@@ -1,0 +1,77 @@
+{
+  "capturedOn": "2026-09-16",
+  "locale": "en-US",
+  "notes": "Actual Azure Portal captures from an available environment, not the original article experiments. Black rectangles permanently redact identifying pixels. Global account headers, resource breadcrumbs and browser URLs are excluded. No resource was created or configuration saved. Captures are cropped, not translated or fabricated. Portal availability and layout can change.",
+  "images": [
+    {
+      "id": "apim-backends",
+      "topic": "ai-gateway-existing",
+      "section": "backend-definitions",
+      "path": "assets/portal/apim-backends.png",
+      "width": 1030,
+      "height": 394,
+      "sha256": "DBB89BCA8B60199D41EF829E26B17413A8C934AE5D16C9BB7AB0C23A8AB9FF24",
+      "title": "Find backend resources and their circuit-breaker status",
+      "navigation": "API Management service > APIs > Backends",
+      "alt": "Azure Portal Backends tab showing backend type and Enabled or Disabled circuit-breaker status. Backend names, descriptions, and runtime URLs are blacked out.",
+      "caption": "The Backends tab lists individual backend resources; Load balancer is a separate tab. This is an existing mixed-backend inventory, not the two-backend pool deployed in the article. Backend names, descriptions, and runtime endpoints are redacted.",
+      "redactions": ["Backend names", "Descriptions", "Runtime URLs", "Account and resource headers excluded"]
+    },
+    {
+      "id": "apim-managed-identity",
+      "topic": "ai-gateway-existing",
+      "section": "managed-identity",
+      "path": "assets/portal/apim-managed-identity.png",
+      "width": 1146,
+      "height": 780,
+      "sha256": "70E95CF55C1202FCD8B18FAAAC0AD09AD6C20EDF4BE55E7C8ABDEEA662D1B776",
+      "title": "Locate the system-assigned identity and role-assignment entry point",
+      "navigation": "API Management service > Security > Managed identities > System assigned",
+      "alt": "Azure Portal System assigned managed identity settings with Status On, a redacted Object principal ID field, and the Azure role assignments button.",
+      "caption": "The identity was already On. Its principal ID is redacted. This screen identifies the APIM identity and provides a role-assignment entry point; it does not prove that the required role exists on any Foundry account. No toggle or role assignment was changed.",
+      "redactions": ["Object principal ID", "Account and resource headers excluded"]
+    },
+    {
+      "id": "apim-circuit-breaker",
+      "topic": "ai-gateway-existing",
+      "section": "policy-retry",
+      "path": "assets/portal/apim-circuit-breaker.png",
+      "width": 800,
+      "height": 1068,
+      "sha256": "3385F27EDF4286F9ACB0DC2F1B0567F3E35281A7726AF06AC4229A1CFA79F856",
+      "title": "Inspect backend circuit-breaker fields without confusing them with policy retries",
+      "navigation": "API Management service > APIs > Backends > select backend > Circuit breaker settings > select rule",
+      "alt": "Existing circuit-breaker edit form showing failure count 1, interval 2 seconds, status ranges 429 and 500 through 503, trip duration 30 seconds, and Retry-After True Accept. Rule name is redacted.",
+      "caption": "Read-only inspection of an existing rule: count 1, interval 2 seconds, status codes 429 and 500-503, trip duration 30 seconds, and Retry-After accepted. These are not the article's 429-only sample defaults. A backend circuit breaker and the operation policy's retry block are separate mechanisms. Save was not clicked.",
+      "redactions": ["Circuit-breaker rule name", "Account, resource headers and URL excluded"]
+    },
+    {
+      "id": "aks-network-profile",
+      "topic": "cilium-network-policy",
+      "section": "preflight",
+      "path": "assets/portal/aks-network-profile.png",
+      "width": 1146,
+      "height": 590,
+      "sha256": "E9ED44217946E6D18D81A80B4B9466433F012FC5489A60C79988C4FB3B2B8671",
+      "title": "Check the actual network profile before planning a migration",
+      "navigation": "Kubernetes service > Settings > Networking > Overview",
+      "alt": "AKS network profile showing Azure CNI Node Subnet, outbound Load Balancer, Cilium dataplane Not enabled, and Network policy engine None. Service CIDR and DNS service IP are redacted.",
+      "caption": "This available cluster reports Azure CNI Node Subnet, Cilium Not enabled, and policy engine None. It is not the article's Azure CNI Overlay test cluster. The screenshot illustrates where to inspect the baseline; it is not an after-migration result or permission to apply the example unchanged. Network addresses are redacted and no migration was started.",
+      "redactions": ["Service CIDR", "DNS service IP", "Account and resource headers excluded"]
+    },
+    {
+      "id": "acr-artifact-referrers",
+      "topic": "acr-streaming",
+      "section": "registry-configuration",
+      "path": "assets/portal/acr-artifact-referrers.png",
+      "width": 1285,
+      "height": 417,
+      "sha256": "CB0052764986E4C6967AA937A26E225195B2ED2F9555CEC9F0C61A5F0C1A3333",
+      "title": "Locate image platform metadata and the Referrers tab",
+      "navigation": "Container registry > Services > Repositories > select repository > select tag > Referrers",
+      "alt": "Container image details showing linux amd64 platform, Docker v2 manifest media type, a disabled Create streaming artifact action, and an empty Referrers list. Identifying image metadata is redacted.",
+      "caption": "The selected existing image reports linux / amd64 and has no listed referrers. Create streaming artifact is disabled in this view; the screenshot does not establish why, prove eligibility, or show successful conversion. Recheck the registry, image, permissions, and feature prerequisites and use the documented verification commands. No artifact was created.",
+      "redactions": ["Repository and tag", "Image digest", "Creation and update timestamps", "Run ID", "Account, registry headers and URL excluded"]
+    }
+  ]
+}

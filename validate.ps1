@@ -1,6 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $PSScriptRoot 'docs'
 $manifest = Get-Content (Join-Path $root 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$portal = Get-Content (Join-Path $PSScriptRoot 'portal-screenshots.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+Add-Type -AssemblyName System.Drawing
 if ($manifest.topicCount -ne 10) { throw 'The public edition must contain exactly 10 topics.' }
 if (@($manifest.topics | Where-Object { $_.category -eq 'App Modernization' }).Count) { throw 'Excluded subject present.' }
 $files = @(Get-ChildItem $root -File -Recurse -Force)
@@ -17,6 +19,29 @@ $checks = @{
     'Populated SAS signature' = '(?i)[?&](?:amp;)?sig=[A-Za-z0-9%+/]{20,}'
 }
 foreach ($file in $files) {
+    if ($file.Extension -eq '.png') {
+        $relative = $file.FullName.Substring($root.Length + 1).Replace('\','/')
+        $entry = @($portal.images | Where-Object { $_.path -ceq $relative })
+        if ($entry.Count -ne 1) { $problems.Add("Unreviewed PNG: $relative"); continue }
+        if ((Get-FileHash $file.FullName -Algorithm SHA256).Hash -ne $entry[0].sha256) { $problems.Add("PNG differs from reviewed pixels: $relative") }
+        $image = [System.Drawing.Image]::FromFile($file.FullName)
+        try {
+            if ($image.Width -ne $entry[0].width -or $image.Height -ne $entry[0].height) { $problems.Add("PNG dimensions differ: $relative") }
+        }
+        finally { $image.Dispose() }
+        $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+        $offset = 8
+        $endFound = $false
+        while ($offset + 12 -le $bytes.Length) {
+            $length = [uint32]$bytes[$offset] * 16777216 + [uint32]$bytes[$offset+1] * 65536 + [uint32]$bytes[$offset+2] * 256 + [uint32]$bytes[$offset+3]
+            $chunk = [System.Text.Encoding]::ASCII.GetString($bytes,$offset+4,4)
+            if ($chunk -notin @('IHDR','IDAT','IEND','sRGB','gAMA','pHYs','cHRM')) { $problems.Add("Unreviewed PNG metadata chunk $chunk in $relative") }
+            $offset += 12 + $length
+            if ($chunk -eq 'IEND') { $endFound = $true; break }
+        }
+        if (-not $endFound -or $offset -ne $bytes.Length) { $problems.Add("Invalid PNG boundary or trailing data: $relative") }
+        continue
+    }
     if ($file.Extension -notin @('.html','.css','.js','.json','.xml','.yaml','.yml','.py','.http','.sh','.ps1','.bicep','.txt','.toml','.kql','.promql')) {
         if ($file.Name -ne '.nojekyll') { $problems.Add("Unreviewed file type: $($file.Name)") }
         continue
@@ -42,6 +67,12 @@ foreach ($file in $htmlFiles) {
     if ($html -notmatch '<html lang="en">' -or $html -notmatch '<meta charset="utf-8">') { $problems.Add("$($file.Name): missing language/encoding.") }
     $ids = @([regex]::Matches($html, '\bid="([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
     if (@($ids | Select-Object -Unique).Count -ne $ids.Count) { $problems.Add("$($file.Name): duplicate IDs.") }
+    $expectedImages = @($portal.images | Where-Object { $_.topic -eq $file.BaseName })
+    $renderedImages = [regex]::Matches($html, '<img\b[^>]*>')
+    if ($renderedImages.Count -ne $expectedImages.Count) { $problems.Add("$($file.Name): incorrect screenshot count.") }
+    foreach ($tag in $renderedImages) {
+        if ($tag.Value -notmatch 'alt="[^"]+"' -or $tag.Value -notmatch 'width="\d+"' -or $tag.Value -notmatch 'height="\d+"') { $problems.Add("$($file.Name): missing image accessibility/dimensions.") }
+    }
     $svgs = [regex]::Matches($html, '<svg\b.*?</svg>', 'Singleline')
     $expectedSvgCount = if ($file.Name -eq 'index.html') { 10 } elseif ($file.BaseName -in @('translation-performance','ase-frontend-scaling')) { 2 } else { 1 }
     if ($svgs.Count -ne $expectedSvgCount) { $problems.Add("$($file.Name): expected $expectedSvgCount visual(s), found $($svgs.Count).") }
@@ -85,6 +116,12 @@ foreach ($row in $visualData.'ase-frontend-scaling'.chart.rows) {
 }
 foreach ($resource in $manifest.resources) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $resource.Replace('/', '\')) -PathType Leaf)) { $problems.Add("Manifest resource missing: $resource") }
+}
+if (@($manifest.portalScreenshots).Count -ne @($portal.images).Count) { $problems.Add('Screenshot manifest count mismatch.') }
+foreach ($image in $portal.images) {
+    if ($image.path -notmatch '^assets/portal/[a-z0-9-]+\.png$' -or -not (Test-Path (Join-Path $root $image.path.Replace('/','\')))) {
+        $problems.Add("Invalid or missing declared screenshot: $($image.id)")
+    }
 }
 if ($problems.Count) { throw ($problems -join "`n") }
 Write-Output "Validated 10 topic pages, index, $($manifest.resources.Count) resources, local links, anchors, JSON/XML, language, and publication patterns."
