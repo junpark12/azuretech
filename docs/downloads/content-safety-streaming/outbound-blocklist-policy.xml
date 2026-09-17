@@ -1,0 +1,29 @@
+<policies>
+    <inbound>
+        <base />
+        <set-backend-service backend-id="openai-backend" />
+        <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+    </inbound>
+    <backend>
+        <forward-request timeout="180" buffer-response="false" />
+    </backend>
+    <outbound>
+        <base />
+        <llm-content-safety backend-id="content-safety-backend"
+                            window-size="3000"
+                            window-overlap-size="500">
+            <categories output-type="EightSeverityLevels">
+                <category name="Hate" threshold="4" />
+                <category name="Violence" threshold="4" />
+                <category name="Sexual" threshold="4" />
+                <category name="SelfHarm" threshold="4" />
+            </categories>
+            <blocklists>
+                <id>pii-known-values</id>
+            </blocklists>
+        </llm-content-safety>
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

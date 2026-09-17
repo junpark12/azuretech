@@ -1,0 +1,37 @@
+{
+  "slug": "content-safety-streaming",
+  "category": "AI",
+  "title": "APIM AI Gateway: Content Safety for Streaming Responses",
+  "summary": "A hands-on guide to llm-content-safety, managed identity, regex blocklists, eight policy scenarios, current debug tracing, and the detection-versus-latency tradeoffs of streaming windows and overlap.",
+  "bodyFile": "content-safety-streaming.html",
+  "sourceDocuments": [
+    "APIM AI Gateway: llm-content-safety Outbound Streaming Inspection Lab Guide",
+    "Reviewed Passthrough Baseline Policy",
+    "ARM Raw XML Policy Payload"
+  ],
+  "downloads": [
+    {
+      "path": "downloads/content-safety-streaming/base-policy.xml",
+      "label": "Passthrough baseline policy (XML)",
+      "description": "Byte-identical reviewed source companion. Routes and authenticates model requests with streaming passthrough; it does not enable Content Safety inspection."
+    },
+    {
+      "path": "downloads/content-safety-streaming/policy-payload.json",
+      "label": "Passthrough baseline ARM payload (JSON)",
+      "description": "Byte-identical reviewed source companion whose rawxml value equals base-policy.xml. It does not enable Content Safety inspection."
+    },
+    {
+      "path": "downloads/content-safety-streaming/outbound-blocklist-policy.xml",
+      "label": "Source-derived outbound categories and blocklist policy (XML)",
+      "description": "Complete API-level example combining the source baseline with outbound inspection at window 3000/overlap 500 and the synthetic lab blocklist pii-known-values. Requires provisioning, RBAC, manual backend managed-identity configuration, and blocklist registration; not deployed or Azure-validated in this editorial review."
+    }
+  ],
+  "omissions": [
+    "The original-language source, private repository location, commit metadata, local paths, and environment identifiers are withheld; this article and its samples contain English descriptions and neutral lab variables only.",
+    "Original request and response bodies, analyzedChunk values, full traces, credentials, resource endpoints, subscription, tenant, principal, and blocklist item identifiers are not published. Identifier-shaped examples are deliberately invalid synthetic format fixtures.",
+    "Historical observations are retained but were not re-run during this editorial review. No raw benchmark dataset, deterministic replay backend, production test harness, or measured latency distribution is supplied by the source.",
+    "The source does not establish exact Content Safety call counts, universal first-flush timing, Unicode window counting semantics, a complete messages/tools serialization model, or a universal inbound cutoff from JSON byte size.",
+    "No verified backend credentials.managedIdentity REST contract is claimed for the reviewed ARM API versions. The required portal managed-identity configuration remains a manual step.",
+    "Retired master-subscription tracing and SAS trace-download procedures are not reproduced as executable instructions. Use short-lived API-specific debug credentials and authenticated listTrace instead."
+  ]
+}

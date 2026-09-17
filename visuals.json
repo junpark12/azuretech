@@ -1,4 +1,22 @@
 {
+  "content-safety-streaming": {
+    "title": "Inspect response windows before forwarding more events",
+    "caption": "Logical outbound inspection flow, not a timing or detection guarantee. APIM sends text windows to Content Safety and stops forwarding further events on a detected streaming violation. Overlap can reduce boundary misses but adds repeated inspection; previously delivered content cannot be recalled. The baseline download alone does not enable these checks.",
+    "nodes": [
+      {"x":24,"y":72,"title":"Model response","detail":"Streaming content","icon":"model"},
+      {"x":275,"y":72,"title":"APIM outbound","detail":"Text window + overlap","icon":"gateway","accent":true},
+      {"x":526,"y":72,"title":"Client","detail":"Forwarded events","icon":"client"},
+      {"x":275,"y":232,"title":"Content Safety","detail":"Categories + blocklists","icon":"shield"},
+      {"x":526,"y":232,"title":"Violation detected","detail":"Stop further forwarding","icon":"shield"}
+    ],
+    "edges": [
+      {"d":"M194 112 H275","x":234,"y":100,"label":"SSE input"},
+      {"d":"M445 112 H526","x":484,"y":100,"label":"after checks"},
+      {"d":"M340 152 V232","x":304,"y":195,"label":"evaluate"},
+      {"d":"M380 232 V152","x":420,"y":195,"label":"verdict","dashed":true},
+      {"d":"M445 272 H526","x":484,"y":260,"label":"on violation"}
+    ]
+  },
   "ai-gateway": {
     "title": "One entry point for models and tools",
     "caption": "Conceptual request path. Gateway policies govern access; model inference and MCP tool execution remain separate operations.",

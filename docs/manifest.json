@@ -1,7 +1,14 @@
 {
     "edition":  "2026-09",
-    "topicCount":  11,
+    "topicCount":  12,
     "topics":  [
+                   {
+                       "sourceDocumentCount":  3,
+                       "title":  "APIM AI Gateway: Content Safety for Streaming Responses",
+                       "category":  "AI",
+                       "resourceCount":  3,
+                       "slug":  "content-safety-streaming"
+                   },
                    {
                        "sourceDocumentCount":  1,
                        "title":  "Azure AI Gateway Tier: Preview Setup, Policies, MCP, and Token Monitoring",
@@ -132,6 +139,9 @@
                       "downloads/ai-gateway-existing/test_legacy_usage.py",
                       "downloads/ai-gateway-existing/test_monitoring.py",
                       "downloads/ai-gateway-existing/v1test.http",
+                      "downloads/content-safety-streaming/base-policy.xml",
+                      "downloads/content-safety-streaming/outbound-blocklist-policy.xml",
+                      "downloads/content-safety-streaming/policy-payload.json",
                       "downloads/istio-gateway-api/current_env/converted-gateway.yaml",
                       "downloads/istio-gateway-api/current_env/gwapi.yaml",
                       "downloads/istio-gateway-api/current_env/internal-ingress.yaml",

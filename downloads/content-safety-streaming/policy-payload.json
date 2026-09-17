@@ -1,0 +1,6 @@
+{
+  "properties": {
+    "format": "rawxml",
+    "value": "<policies>\n    <inbound>\n        <base />\n        <set-backend-service backend-id=\"openai-backend\" />\n        <authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" />\n    </inbound>\n    <backend>\n        <forward-request timeout=\"180\" buffer-response=\"false\" />\n    </backend>\n    <outbound>\n        <base />\n    </outbound>\n    <on-error>\n        <base />\n    </on-error>\n</policies>\n"
+  }
+}

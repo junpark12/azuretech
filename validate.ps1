@@ -5,13 +5,14 @@ $portal = Get-Content (Join-Path $PSScriptRoot 'portal-screenshots.json') -Raw -
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Web.Extensions
 $jsonParser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-if ($manifest.topicCount -ne 11) { throw 'The public edition must contain exactly 11 topics.' }
+if ($manifest.topicCount -ne 12) { throw 'The public edition must contain exactly 12 topics.' }
+if (@($manifest.topics | Where-Object { $_.slug -eq 'content-safety-streaming' -and $_.category -eq 'AI' }).Count -ne 1) { throw 'The Content Safety streaming topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.slug -eq 'self-hosted-aca' -and $_.category -eq 'GitHub' }).Count -ne 1) { throw 'The GitHub ACA runner topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.category -eq 'App Modernization' }).Count) { throw 'Excluded subject present.' }
 $files = @(Get-ChildItem $root -File -Recurse -Force)
 $problems = New-Object 'System.Collections.Generic.List[string]'
 $htmlFiles = @($files | Where-Object { $_.Extension -eq '.html' })
-if ($htmlFiles.Count -ne 12) { $problems.Add("Expected 12 HTML files, found $($htmlFiles.Count).") }
+if ($htmlFiles.Count -ne 13) { $problems.Add("Expected 13 HTML files, found $($htmlFiles.Count).") }
 $guidPattern = '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'
 $publicRoleIds = @('5e0bd9bd-7b93-4f28-af87-19fc36ad61bd') # Cognitive Services OpenAI User.
 $checks = @{
@@ -69,7 +70,7 @@ foreach ($file in $files) {
 foreach ($file in $htmlFiles) {
     $html = Get-Content $file.FullName -Raw -Encoding UTF8
     if ($html -notmatch '<html lang="en">' -or $html -notmatch '<meta charset="utf-8">') { $problems.Add("$($file.Name): missing language/encoding.") }
-    $ids = @([regex]::Matches($html, '\bid="([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+    $ids = @([regex]::Matches($html, '<[a-zA-Z][^<>]*\sid="([^"]+)"[^<>]*>') | ForEach-Object { $_.Groups[1].Value })
     if (@($ids | Select-Object -Unique).Count -ne $ids.Count) { $problems.Add("$($file.Name): duplicate IDs.") }
     $expectedImages = @($portal.images | Where-Object { $_.topic -eq $file.BaseName })
     $renderedImages = [regex]::Matches($html, '<img\b[^>]*>')
@@ -99,7 +100,7 @@ foreach ($file in $htmlFiles) {
         if ($parts.Count -gt 1 -and $parts[1] -and [System.IO.Path]::GetExtension($target) -eq '.html') {
             $anchor = [System.Uri]::UnescapeDataString($parts[1])
             $targetText = Get-Content $target -Raw -Encoding UTF8
-            if ($targetText -notmatch ('\bid="' + [regex]::Escape($anchor) + '"')) { $problems.Add("$($file.Name): missing anchor $link") }
+            if ($targetText -notmatch ('<[a-zA-Z][^<>]*\sid="' + [regex]::Escape($anchor) + '"[^<>]*>')) { $problems.Add("$($file.Name): missing anchor $link") }
         }
     }
 }
