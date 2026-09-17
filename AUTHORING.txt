@@ -24,7 +24,7 @@ Build
   powershell.exe -NoProfile -File .\validate.ps1
 
 Use a shell allowed by your organization's execution policy. Do not change
-machine or user policy merely to run these files. The build requires all twelve
+machine or user policy merely to run these files. The build requires all thirteen
 declared topics; -AllowPartial is for local work in progress only.
 
 Preview
@@ -62,6 +62,9 @@ Visuals
   Original source screenshots are not used.
 
 Portal screenshots
+  A screenshot may specify capturedOn individually; otherwise the collection
+  date is used. CVM form captures dated 2026-09-17 show unsubmitted controls,
+  not a successful deployment, quota reservation, or hardware attestation.
   Captures dated 2026-09-16 show an available environment, not the original
   experiments. Captions state differences (for example, Node Subnet versus
   Overlay, nonmatching circuit-breaker settings, or absent image referrers).

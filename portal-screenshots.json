@@ -4,6 +4,36 @@
   "notes": "Actual Azure Portal captures from an available environment, not the original article experiments. Black rectangles permanently redact identifying pixels. Global account headers, resource breadcrumbs and browser URLs are excluded. No resource was created or configuration saved. Captures are cropped, not translated or fabricated. Portal availability and layout can change.",
   "images": [
     {
+      "id": "aks-cvm-os-options",
+      "topic": "aks-confidential-vm",
+      "section": "deployment",
+      "capturedOn": "2026-09-17",
+      "path": "assets/portal/aks-cvm-os-options.png",
+      "width": 800,
+      "height": 500,
+      "sha256": "B7947CCD967EFEF1F1ECE70828CF6AC2F222A8298775716C6080667F8A577E89",
+      "title": "Locate Azure Linux 3 in the node-pool OS selector",
+      "navigation": "Kubernetes service > Node pools > Add node pool > Virtual Machine Scale Set node pool > Basics > OS SKU",
+      "alt": "Unsubmitted Add a node pool form with User mode, Linux OS and an open OS SKU list containing Ubuntu variants, Azure Linux and Azure Linux 3. The current dropdown value is Ubuntu Linux.",
+      "caption": "Actual English portal form, captured before submission. Azure Linux 3 is an available menu entry in this context; the dropdown's current value is still Ubuntu Linux. Selecting an OS alone does not enable Confidential VM protection. Verify the supported CVM size and resulting node image using the checks in this guide. No node pool was created or existing configuration saved.",
+      "redactions": ["Account header, resource title, breadcrumbs and browser URL excluded", "Node pool name left empty"]
+    },
+    {
+      "id": "aks-cvm-size-picker",
+      "topic": "aks-confidential-vm",
+      "section": "sku-quota",
+      "capturedOn": "2026-09-17",
+      "path": "assets/portal/aks-cvm-size-picker.png",
+      "width": 1028,
+      "height": 300,
+      "sha256": "5E1EB9C545A7841F53644467800CD8ECFDD68689E4FC8843976DD92D487122F5",
+      "title": "Recognize the confidential-compute VM family in the size picker",
+      "navigation": "Unsubmitted node-pool form > Azure Linux 3 > Choose a size > search DC4as",
+      "alt": "VM size picker filtered to DC4as in East US 2. DC4as_v6 is listed as Confidential compute with 4 vCPUs and 16 GiB RAM. Subscription identification is blacked out; price columns are outside the crop.",
+      "caption": "The available form listed DC4as_v6 after Azure Linux 3 was selected locally in an unsubmitted form. This is a dated UI observation, not proof of AKS deployment acceptance, available family or regional quota, physical capacity, or attestation. No size was committed and the form was closed. Subscription identification is masked; pricing is not reproduced.",
+      "redactions": ["Subscription identification masked", "Account header and browser URL excluded", "Environment-dependent price masked before capture and omitted by final crop"]
+    },
+    {
       "id": "apim-backends",
       "topic": "ai-gateway-existing",
       "section": "backend-definitions",

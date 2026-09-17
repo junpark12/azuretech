@@ -27,7 +27,12 @@ function Topic-Diagram([string]$slug, [switch]$Thumbnail) {
         '<g class="diagram-node' + $accent + '" transform="translate(' + $n.x + ' ' + $n.y + ')"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)">' + (Svg-Icon $n.icon) + '</g><text class="diagram-node-title" x="12" y="47">' + (Encode $n.title) + '</text><text class="diagram-node-detail" x="12" y="65">' + (Encode $n.detail) + '</text></g>'
     }
     $access = if ($Thumbnail) { 'aria-hidden="true" focusable="false"' } else { 'role="img" aria-label="' + (Encode ($v.title + '. ' + $v.caption)) + '"' }
-    $svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 344" ' + $access + '><defs><marker id="' + $marker + '" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="diagram-arrow" d="M0 0L8 4L0 8z"/></marker></defs><path class="diagram-guide" d="M24 32H696M24 324H696"/><text class="diagram-kicker" x="24" y="23">SYSTEM VIEW / ' + (Encode $slug.ToUpperInvariant().Replace('-', ' ')) + '</text>' + ($edges -join '') + ($nodes -join '') + '</svg>'
+    $boundary = ''
+    if ($v.boundary) {
+        $b = $v.boundary
+        $boundary = '<rect class="diagram-boundary" x="' + $b.x + '" y="' + $b.y + '" width="' + $b.width + '" height="' + $b.height + '" rx="16"/><text class="diagram-kicker" x="' + ($b.x + 16) + '" y="' + ($b.y + 18) + '">' + (Encode $b.label) + '</text>'
+    }
+    $svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 344" ' + $access + '><defs><marker id="' + $marker + '" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="diagram-arrow" d="M0 0L8 4L0 8z"/></marker></defs><path class="diagram-guide" d="M24 32H696M24 324H696"/><text class="diagram-kicker" x="24" y="23">SYSTEM VIEW / ' + (Encode $slug.ToUpperInvariant().Replace('-', ' ')) + '</text>' + $boundary + ($edges -join '') + ($nodes -join '') + '</svg>'
     if ($Thumbnail) { return '<div class="topic-illustration">' + $svg + '</div>' }
     '<figure class="technical-visual"><div class="visual-heading"><span class="eyebrow">ARCHITECTURE AT A GLANCE</span><h2 id="visual-overview">' + (Encode $v.title) + '</h2></div><div class="visual-canvas" tabindex="0" role="region" aria-label="Scrollable architecture diagram">' + $svg + '</div><figcaption>' + (Encode $v.caption) + ' Lines show the relationships labeled above; dashed lines distinguish configuration or other non-primary paths. The full procedure below explains the details.</figcaption></figure>'
 }

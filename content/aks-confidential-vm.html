@@ -1,0 +1,287 @@
+<h2 id="scope">Scope: deployment guidance and a separate upgrade observation</h2>
+<p>Confidential Virtual Machines (CVMs) add a hardware-enforced boundary around an AKS node. They are useful when sensitive workloads must reduce their trust in the cloud host and hypervisor without being rewritten for an enclave SDK. They do not make every container a separate trusted execution environment, secure an application automatically, or remove normal Kubernetes operating responsibilities.</p>
+<blockquote><strong>Evidence boundary.</strong> This article translates and corrects a September 2026 engineering guide. Regional and quota observations originated on September 15, with configuration and selected capability checks updated on September 17. They are historical, subscription-specific observations, not official availability commitments. The provisioning walkthrough targets <strong>Azure Linux 3</strong>; the recorded Kubernetes upgrade used <strong>Ubuntu 24.04</strong>. No new cluster deployment, upgrade, quota request, performance test, or shutdown timing measurement was performed for this publication. Recheck current official support, subscription restrictions, quota, and allocation capacity before deployment.</blockquote>
+<p>The practical starting point is an ordinary System pool and a CVM User pool, with workload-specific placement rules and no custom dedicated taint on the CVM pool. This is an operational baseline, not an exclusivity or high-availability guarantee. The article covers the trust boundary, cost, maintenance, OS disk choices, regional discovery, quota planning, deployment, migration, and what the shutdown sample actually established.</p>
+
+<h2 id="security-boundary">Three protections, three different jobs</h2>
+<table><thead><tr><th>Protection</th><th>What it addresses</th><th>What it does not establish</th></tr></thead><tbody>
+<tr><td>CVM</td><td>Data in use: VM memory and execution state protected from the hypervisor and host management code through supported AMD SEV-SNP hardware and a CVM-specific node image.</td><td>That an application cannot be compromised, or that mutually untrusted Pods are isolated from each other by hardware.</td></tr>
+<tr><td>Disk encryption</td><td>Data at rest. Azure Managed Disks use server-side encryption with platform-managed keys by default; customer-managed keys are a separate configuration choice.</td><td>Protection for plaintext in an application process, TLS in transit, or automatic activation of every confidential disk encryption option.</td></tr>
+<tr><td>Application and platform security</td><td>Vulnerability management, least privilege, secret handling, image provenance, network restrictions, and safe logging.</td><td>These controls remain necessary even on a CVM node.</td></tr>
+</tbody></table>
+<p>TLS protects data in transit; CVM protection addresses a different stage of its lifecycle. Persistent Volumes, external databases, an ingress proxy on an ordinary node, and a logging destination outside the CVM are not automatically brought inside its boundary. Trace sensitive data from ingress and TLS termination through processing, storage, telemetry, and backup.</p>
+<h3>The node VM is the trust boundary</h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/aks/use-cvm">The AKS CVM documentation</a> explicitly places all Pods on a CVM node in the same trust boundary. The guest OS, kernel, kubelet, node agents, and application Pods share that VM boundary. Kubernetes administrator access, guest root, privileged containers, and vulnerable agents still matter. CVM is not Pod Sandboxing and is not a per-Pod TEE.</p>
+<p>This can help address requirements concerning infrastructure-operator access to sensitive customer, financial, or regulated data while retaining Deployment, Service, and scaling patterns. It does not itself deliver certification or regulatory compliance. Application code may remain unchanged, but scheduling, storage, availability, and OS-dependent integrations still require testing.</p>
+<h3>Attestation and secret release are not intrusion detection</h3>
+<p>A vTPM protects keys and boot measurements. Attestation verifies evidence about the execution platform and its security configuration. Azure uses platform attestation in the CVM lifecycle; an application-specific policy that releases a secret only to a verified environment is a separate design. You do not need to implement that application policy merely to create a CVM node pool.</p>
+<p>Where required, connect guest attestation to a deliberately designed secret or key-release policy, including identity, verification, authorization, and renewal behavior. Do not describe this as a mechanism that automatically detects an application compromise and locks its memory again: a successful attestation does not prevent later application vulnerabilities or credential misuse. See the <a href="https://learn.microsoft.com/en-us/azure/confidential-computing/confidential-vm-overview">confidential VM overview</a>.</p>
+
+<h2 id="pool-placement">System pools, User pools, and honest placement rules</h2>
+<p><strong>System/User describes the pool's role; CVM/ordinary VM describes its hardware protection.</strong> CVM is not inherently User-pool-only. A System pool can use a supported CVM SKU and OS when all System-pool and CVM constraints are satisfied. Protecting the System pool may be appropriate if its components process information included in your threat model, but it is not required for a CVM User node's memory protection.</p>
+<p>A System pool is also not the AKS managed control plane. Changing its VM size or protection does not turn the managed API server or etcd into your CVM node pool. Current <a href="https://learn.microsoft.com/en-us/azure/aks/use-system-pools">System-pool documentation</a> requires Linux, support for at least 30 Pods, at least 4 vCPUs and 4 GB memory per VM, and at least two System nodes; three are recommended. The one-node System pool in the later historical lab observation is not a production sizing recommendation.</p>
+<table><thead><tr><th>Pool</th><th>Intended use</th><th>Placement responsibility</th></tr></thead><tbody>
+<tr><td>Ordinary System pool</td><td>Central system services such as CoreDNS and metrics-server.</td><td>Pool mode influences scheduling but does not by itself enforce all desired placement.</td></tr>
+<tr><td>Ordinary User pool, if needed</td><td>General applications that do not require confidential compute.</td><td>Give those applications their own pool selectors when they must stay off CVM nodes.</td></tr>
+<tr><td>CVM User pool</td><td>Sensitive applications and the node-local components needed to run them.</td><td>Use the AKS agent-pool label in application selectors. The baseline adds no custom dedicated taint.</td></tr>
+</tbody></table>
+<h3>Do not accidentally exclude required node agents</h3>
+<p>Network and CSI node drivers must be present where their node-level functions are required. Log and metric collectors may also need a DaemonSet on each CVM node. Central CSI controllers and metrics-server need not run on every node. App Routing and other add-ons must be evaluated by the actual controller and data-path roles, not their names or namespaces.</p>
+<p>The no-custom-taint baseline avoids unintentionally blocking required agents and add-ons. A taint is not needed to enable CVM protection. Conversely, neither <code>kube-system</code> membership nor being a DaemonSet exempts a Pod from arbitrary custom taints. If you introduce a taint, verify each component's supported tolerations; hand-editing a managed DaemonSet can be undone by reconciliation or upgrades. See <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/">taints and tolerations</a>.</p>
+<p>Node Ready is only the first check. Validate DNS, cross-Pod communication, PVC attachment and read/write, metrics, logs, and routing. Restrict who can deploy privileged agents or edit scheduling rules. An untrusted privileged workload on the same CVM node is still inside the shared guest trust boundary.</p>
+<h3>A selector constrains one workload, not the whole pool</h3>
+<pre><code class="language-yaml"># Merge into the sensitive Deployment's spec.template.spec.
+nodeSelector:
+  kubernetes.azure.com/agentpool: REPLACE_WITH_CVM_POOL
+
+# For a different, ordinary workload, use its own ordinary User pool instead:
+# nodeSelector:
+#   kubernetes.azure.com/agentpool: REPLACE_WITH_GENERAL_POOL</code></pre>
+<p>Replace the placeholder with the real pool name; Kubernetes does not expand shell variables in a manifest. A <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/">nodeSelector</a> is a required scheduling constraint. If no suitable CVM node is available, a newly scheduled Pod remains Pending instead of falling back to an ordinary pool. Existing selectors and required node affinity must also be satisfied.</p>
+<p><strong>This is not exclusive reservation.</strong> Other eligible Pods, including applications without selectors, can still land on the CVM pool. Manage ordinary workload placement too; use admission policy where enforcement is required. A label is neither cryptographic attestation nor per-Pod isolation. Changing this example does not remove any taints already present on an existing pool.</p>
+
+<h2 id="cost-and-compatibility">Cost, performance, and supported combinations</h2>
+<p><a href="https://learn.microsoft.com/en-us/azure/azure-linux/faq-aks">Azure Linux has no extra OS usage charge</a>. Compare the selected VM and disk prices, operating topology, and achieved throughput rather than assuming a universal CVM price uplift.</p>
+<table><thead><tr><th>Cost factor</th><th>What to compare</th></tr></thead><tbody>
+<tr><td>VM price</td><td>Region, generation, CPU/memory size, commercial terms, and discounts. This article provides no official uplift percentage or quotation.</td></tr>
+<tr><td>Workload performance</td><td>Node count needed to meet the same throughput and p95/p99 latency. CPU, memory, and I/O patterns can change the result.</td></tr>
+<tr><td>Separate pools</td><td>Idle capacity that workloads cannot borrow because of their placement rules, plus the continuing System-pool cost.</td></tr>
+<tr><td>Migration and upgrades</td><td>Old and new pools running together, surge nodes, and temporary disk or operational resources.</td></tr>
+<tr><td>Storage and keys</td><td>Actual AKS-supported configuration. Standalone CVM documentation discusses VMGS storage and optional Confidential OS disk encryption costs; do not assume every standalone option applies unchanged to AKS.</td></tr>
+</tbody></table>
+<pre><code>Monthly cost difference
+  = new CVM pool VM and disk cost
+  - replaced ordinary pool VM and disk cost
+  + additional operating resources</code></pre>
+<p>Quota approval is not a resource-usage charge and is not a capacity reservation. Actual allocated resources can incur charges. Use current <a href="https://azure.microsoft.com/pricing/calculator/">Azure pricing</a> and your agreement for budgeting. No availability percentage, measured performance penalty, or SLA improvement is inferred here.</p>
+<h3>Check the AKS support matrix, not only standalone VM documentation</h3>
+<ul>
+<li>Supported AMD CVM sizes use SEV-SNP. The current AKS CVM page does not support Intel TDX-based CVMs, ARM64, Windows pools, FIPS, Trusted Launch, or Pod Sandboxing in this combination. CVM Secure Boot capability is not the same as enabling the separate Trusted Launch feature.</li>
+<li>The current matrix lists <code>AzureLinux</code> CVM support on Azure Linux 3, with that default for Kubernetes 1.28–1.36. This is an OS-mapping range, not permission to deploy an out-of-support Kubernetes version.</li>
+<li><code>Ubuntu2404</code> CVM support is listed for Kubernetes 1.32–1.38. The generic <code>Ubuntu</code> CVM default is Ubuntu 24.04 for Kubernetes 1.35–1.38. Ubuntu 22.04 is not supported for AKS CVM in the retrieved matrix. Verify the live matrix before selecting a version.</li>
+<li>Azure Linux with OS Guard, Flatcar, and Azure Container Linux are distinct OS choices and are not CVM-supported in the retrieved matrix. Do not assume similarly named OS offerings are interchangeable.</li>
+<li>Do not convert an ordinary pool to a CVM merely by changing a label or attempting an in-place size change. Create a new supported CVM pool and migrate workloads.</li>
+<li>Check the exact SKU's network capabilities. The retrieved DCasv5, DCasv6, and DCadsv6 specifications list Accelerated Networking as unsupported; this is independent of OS disk support.</li>
+</ul>
+<p>The guide's Azure Linux 3 expansion context refers to the June 2026 AKS CVM release. It does not imply that existing ordinary Azure Linux nodes automatically became confidential. The supported CVM size and specialized node image are essential.</p>
+
+<h2 id="maintenance">Maintenance: design for restart and recovery</h2>
+<p>The <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/dcasv5-series">DCasv5 specification</a> lists Live Migration and Memory Preserving Updates as unsupported. Do not depend on moving a running process to another host while preserving its execution state. Compared with a configuration that can successfully use live migration, some host maintenance can require application restart or advance application-level failover.</p>
+<blockquote><strong>Operational possibility, not measured frequency.</strong> The source did not measure how often CVMs restart. This is not a claim that every update reboots a node, that a prior Freeze count becomes an equal number of CVM reboots, or that ordinary VM live migration always succeeds. A failed host may provide no opportunity for migration at all.</blockquote>
+<p><strong>Unresolved v6 discrepancy:</strong> on September 17, the source AKS SKU response reported <code>MemoryPreservingMaintenanceSupported=True</code> for <code>Standard_DC4as_v6</code> and <code>Standard_DC4ads_v6</code>. The public <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/dcasv6-series#feature-support">DCasv6</a> and <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/dcadsv6-series#feature-support">DCadsv6</a> specifications retrieved for this article still list both Live Migration and Memory Preserving Updates as unsupported. These are different evidence sources, not a resolved support statement. Ask Azure Support what applies to the exact AKS SKU, image, region, and maintenance event. That API field does not prove Live Migration support.</p>
+<p>Design for a service that survives process restart, rather than merely tolerating a brief pause. Use replicas, placement across appropriate failure domains, durable external state, idempotent retries, and a maintenance plan. A PodDisruptionBudget can constrain supported voluntary evictions during normal drain; it cannot stop hardware failure, enforce a platform maintenance deadline, or prevent a VM reboot.</p>
+<table><thead><tr><th>Event</th><th>Shutdown opportunity</th><th>Important limit</th></tr></thead><tbody>
+<tr><td>Normal AKS node-pool upgrade</td><td>Cordon/drain and normal Pod termination allow signal handling, a suitable grace period, and an optional preStop hook.</td><td>Application cleanup still has to finish within the available budget.</td></tr>
+<tr><td>Platform Redeploy</td><td>AKS node auto-drain attempts cordon and drain.</td><td>Best effort: insufficient notice, deadlines, or failures can prevent completion.</td></tr>
+<tr><td>Platform Reboot</td><td>The AKS node auto-drain table specifies no action.</td><td>Guest OS/kubelet shutdown behavior is separate; do not assume every Pod receives its full grace period.</td></tr>
+<tr><td>Sudden hardware failure</td><td>A termination signal might never arrive.</td><td>Recovery cannot depend solely on graceful shutdown.</td></tr>
+</tbody></table>
+<p>See <a href="https://learn.microsoft.com/en-us/azure/aks/node-auto-drain">AKS node auto-drain</a> and <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/linux/scheduled-events">Scheduled Events</a>. When notice is available, stop accepting work, complete suitable in-flight work, persist checkpoints, release connections, and hand off roles. <code>terminationGracePeriodSeconds</code> controls Kubernetes' normal Pod termination budget; it does not force Azure to postpone platform maintenance for that duration.</p>
+<p>Graceful shutdown helps clean up before interruption. Replication, external state, and retries help when cleanup is impossible. You need both.</p>
+
+<h2 id="os-disks">Managed versus Ephemeral OS Disk: verify the exact combination</h2>
+<p>Do not generalize the DCasv5 limitation into “CVM never supports Ephemeral OS Disk.” Hardware local storage, a supported ephemeral placement, AKS image support, and a suitable OS disk size are distinct checks. Ephemeral OS disk writes reside on local VM storage and are not durable across events such as redeployment or reimage. Keep application state on appropriate durable storage.</p>
+<table><thead><tr><th>SKU</th><th>Evidence</th><th>Interpretation</th></tr></thead><tbody>
+<tr><td><code>Standard_DC4as_v5</code></td><td>Public DCasv5 specification: no local storage; Ephemeral OS Disk unsupported.</td><td>Use a supported persistent OS disk configuration.</td></tr>
+<tr><td><code>Standard_DC4as_v6</code></td><td>Source AKS capability query: Ephemeral OS Disk unsupported. Public DCasv6 specification retrieved for this article: Ephemeral OS Disk supported, while also listing no local storage.</td><td><strong>Unresolved documentation/API discrepancy.</strong> Do not publish a universal supported/unsupported conclusion for AKS. The walkthrough conservatively retains Managed OS Disk.</td></tr>
+<tr><td><code>Standard_DC4ads_v6</code></td><td>Public specification: 150 GiB local storage and Ephemeral OS Disk supported. Source AKS query: <code>MaxResourceVolumeMB=153600</code>, <code>EphemeralOSDiskSupported=True</code>, <code>SupportedEphemeralOSDiskPlacements=ResourceDisk</code>.</td><td>A capability-query candidate, <strong>not a successfully deployed Azure Linux 3 ephemeral pool</strong>. Verify the complete combination before adopting it.</td></tr>
+</tbody></table>
+<p>For any ephemeral candidate, confirm target-region and subscription access, the exact AKS OS/image combination, supported placement, and that both the image and requested OS disk size fit the usable local storage. A default disk size can be too large. Do not arbitrarily shrink below the image's supported requirements. The general <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/ephemeral-os-disks">Ephemeral OS Disk documentation</a> also distinguishes caching modes and sizing; do not infer that every standalone VM option is exposed or supported in AKS.</p>
+<p>Changing only <code>--node-osdisk-type Managed</code> to <code>Ephemeral</code> is not a complete migration plan. A verified candidate might require a different SKU, <code>--node-osdisk-type Ephemeral</code>, and an appropriate explicit OS disk size. <code>standardDCasv6Family</code> quota does not cover <code>standardDCadsv6Family</code>. Ephemeral placement and Confidential OS disk encryption are separate choices.</p>
+
+<h2 id="sku-quota">SKU visibility, AKS support, quota, and capacity are four gates</h2>
+<p><strong>Finding a size in a catalog or Portal picker is not deployment validation.</strong> A selectable entry does not prove the complete OS/version combination, sufficient quota, or free physical capacity. The historical inventory and support requests below are reduced to anonymous decision patterns rather than republished account records.</p>
+<table><thead><tr><th>Gate</th><th>Evidence to collect</th><th>What remains unproven</th></tr></thead><tbody>
+<tr><td>Compute catalog</td><td><code>az vm list-skus --all</code>, location/zone information, and restrictions.</td><td>AKS eligibility, OS/image support, quota, and allocation.</td></tr>
+<tr><td>AKS size eligibility</td><td><code>az aks list-vm-skus --all</code> and current AKS CVM support documentation.</td><td>Successful deployment of the exact OS/version/features, quota, and allocation.</td></tr>
+<tr><td>Quota</td><td>Family and Total Regional vCPU limits and valid usage values.</td><td>Reservation or availability of physical capacity.</td></tr>
+<tr><td>Allocation capacity</td><td>The actual authorized allocation result, or an independently applicable capacity arrangement.</td><td>Permanent future scale-out and upgrade capacity.</td></tr>
+</tbody></table>
+<h3>What the regional survey illustrates</h3>
+<p>The survey examined eight representative 4-vCPU models: DC4as, DC4ads, EC4as, and EC4ads, each in v5 and v6. DC is general purpose and EC is memory optimized. In these families, the <code>ads</code> variants include local temporary storage while <code>as</code> variants do not. Results for one size must not be generalized to every size in its family.</p>
+<p><strong>Historical catalog examples only:</strong> Korea Central and East US 2 returned representative v6 entries, with selected DC4 v6 sizes also found in the AKS list; their representative v5 entries were not returned in that survey. Southeast Asia returned both generations and selected DC4 models in the AKS list; the observed v5 zone list contained only logical zone 1, while v6 showed 1 and 2. Japan East illustrated a v5 subscription restriction alongside unrestricted v6 catalog entries, without equivalent AKS validation in that survey. These are not current inventory guarantees or a regional recommendation.</p>
+<p>The broader catalog exercise included public-region candidates across Asia, Oceania, the Americas, Europe, the Middle East, and Africa. Most were not individually checked for AKS eligibility and quota. Rather than turn that one subscription's long list into an apparent product availability matrix, use the repeatable checks below for your own region. Internal, staging, and early-access region names are not deployment candidates in this article.</p>
+<ul>
+<li><code>restrictions: []</code> means no restrictions were returned by that query, not that capacity or quota exists.</li>
+<li>An empty result means that exact query did not return the size. It is not a permanent worldwide unsupported declaration.</li>
+<li><code>NotAvailableForSubscription</code> is a subscription restriction, not proof that quota is the only issue.</li>
+<li>Zone numbers are logical for the subscription. Never copy <code>--zones 1 2 3</code> into a combination that returned only one zone.</li>
+</ul>
+<h3>Anonymous quota decision examples</h3>
+<table><thead><tr><th>Pattern</th><th>Example</th><th>Decision</th></tr></thead><tbody>
+<tr><td>AKS-listed size and approved family quota</td><td>A 16-vCPU family limit with zero usage.</td><td>Enough family headroom for three 4-vCPU nodes plus one surge node, subject to regional quota and physical capacity.</td></tr>
+<tr><td>Quota approved, size absent from AKS results</td><td>A 16-vCPU family approval without the intended AKS size being returned.</td><td>Resolve SKU access/support separately; approval does not override the AKS list.</td></tr>
+<tr><td>Size listed, family quota zero</td><td>An increase request awaiting review.</td><td>A submitted support request is not an approval. Wait for an actual usable limit.</td></tr>
+<tr><td>Quota for the wrong generation or family</td><td>Spare v5 quota, but the intended deployment is DCasv6 or DCadsv6.</td><td>Check the exact family. Limits do not transfer between generations or disk variants.</td></tr>
+</tbody></table>
+<p>The source also encountered a negative usage value when a family limit was zero. Treat negative, null, missing, or failed usage responses as unknown. Never compute fictitious capacity by subtracting a negative sentinel from zero. Approval time and outcome are not guaranteed; allocation may still fail after approval.</p>
+<h3>Budget for the maximum node count and surge</h3>
+<pre><code>3 steady-state nodes + 1 upgrade surge node
+  = (3 + 1) x 4 vCPUs
+  = 16 additional vCPUs
+
+Family target limit
+  &gt;= existing family usage
+     + (planned maximum nodes + surge nodes) x vCPUs per node
+
+Regional target limit
+  &gt;= existing regional usage
+     + additional deployment, scale-out, and upgrade vCPUs</code></pre>
+<p>For autoscaling, use the planned maximum, not just initial node count. Include concurrently upgraded pools and old/new pool overlap without double-counting existing allocations. AKS nodes compete with other VM/VMSS resources in the same subscription and region. Both family and regional headroom must be sufficient; request only the family you intend to use.</p>
+
+<h2 id="discovery-commands">Repeatable discovery and quota checks</h2>
+<p>These are Bash examples, not commands executed for this publication. Supply your own values and confirm the subscription with <code>az account show</code>. Avoid publishing its identifiers. The source environment obtained <code>az aks list-vm-skus</code> through an already-installed <code>aks-preview</code> extension; that command's extension dependency is separate from the CVM feature's release status. Check local command help and organization policy rather than assuming an extension is installed.</p>
+<pre><code class="language-bash">: "${LOCATION:?Set the target public Azure region}"
+SKU="Standard_DC4as_v6"
+
+az vm list-skus \
+  --location "$LOCATION" --resource-type virtualMachines \
+  --size "$SKU" --all \
+  --query "[?name=='$SKU'].{sku:name,family:family,locations:locations,locationInfo:locationInfo,restrictions:restrictions}" \
+  -o json
+
+az aks list-vm-skus \
+  --location "$LOCATION" --size "$SKU" --all \
+  --query "[?name=='$SKU'].{sku:name,family:family,locationInfo:locationInfo,restrictions:restrictions,capabilities:capabilities}" \
+  -o json</code></pre>
+<p><code>--all</code> includes restricted results, so read the restrictions. The capability list helps inspect disk and maintenance fields but does not supersede documented AKS support. Without the AKS-specific command, Compute results plus documentation remain useful but are not equivalent to a direct AKS SKU lookup.</p>
+<pre><code class="language-bash">SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+SCOPE="/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Compute/locations/$LOCATION"
+
+az quota list --scope "$SCOPE" \
+  --query "[].{name:name,label:properties.name.localizedValue,limit:properties.limit.value}" \
+  -o table
+
+# Confirm the exact family name from the list before using this example.
+FAMILY="standardDCasv6Family"
+az quota show --scope "$SCOPE" --resource-name "$FAMILY" \
+  --query "{name:name,limit:properties.limit.value}" -o json
+az quota usage show --scope "$SCOPE" --resource-name "$FAMILY" \
+  --query "{name:name,usage:properties.usages.value}" -o json
+az quota show --scope "$SCOPE" --resource-name cores \
+  --query "{name:name,limit:properties.limit.value}" -o json
+az quota usage show --scope "$SCOPE" --resource-name cores \
+  --query "{name:name,usage:properties.usages.value}" -o json</code></pre>
+<p>The quota commands require an available quota extension. If it is absent, obtain approval for the required extension; if provider registration is required, ask the subscription administrator to handle <code>Microsoft.Quota</code>. Do not treat a failed query as zero usage.</p>
+<h3>Request quota only when necessary</h3>
+<ol>
+<li>Open Azure Portal Quotas, choose Compute, and filter to the intended subscription and region.</li>
+<li>Select the exact VM family and request the desired <strong>final limit</strong>, including existing usage and planned headroom.</li>
+<li>If direct adjustment is unavailable or denied, use the support workflow with the region, SKU, requested vCPU limit, and intended use.</li>
+<li>After approval, reread both family and Total Regional vCPU limits and usage. The <a href="https://learn.microsoft.com/en-us/azure/quotas/per-vm-quota-requests">official quota process</a> says family approval automatically increases regional quota, but verify the resulting headroom before deployment.</li>
+</ol>
+<p><strong>The following optional command submits a real quota change request; it is not a read-only check.</strong> Do not run it where the current quota is already sufficient. Set a final limit justified by your plan, not an increment or a value lower than your current limit.</p>
+<pre><code class="language-bash">: "${TARGET_LIMIT:?Set the approved desired final vCPU limit}"
+az quota update --scope "$SCOPE" --resource-name "$FAMILY" \
+  --limit-object "value=$TARGET_LIMIT" --resource-type dedicated
+az quota request status list --scope "$SCOPE" -o table</code></pre>
+<p>Quota approval alone is not a reservation; consult <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/quotas">VM quota guidance</a> and plan for allocation failure independently.</p>
+
+<h2 id="deployment">Provision an Azure Linux 3 CVM User pool</h2>
+<blockquote><strong>Guidance, not an executed Azure Linux 3 deployment.</strong> Creating the pool below allocates billable resources. Confirm current OS/Kubernetes support, exact SKU restrictions, family and regional quota, and allowed zones first. A node pool must be in the cluster's region: spare capacity in another region requires a cluster there, not a cross-region pool attachment.</blockquote>
+<h3>Confirm the existing cluster</h3>
+<pre><code class="language-bash">: "${RG:?Set the existing AKS resource group}"
+: "${AKS:?Set the existing AKS cluster name}"
+: "${POOL:?Set a valid new lowercase AKS pool name}"
+
+az aks show --resource-group "$RG" --name "$AKS" \
+  --query "{location:location,kubernetesVersion:kubernetesVersion,state:provisioningState}" \
+  -o json
+LOCATION=$(az aks show --resource-group "$RG" --name "$AKS" \
+  --query location -o tsv)</code></pre>
+<p>Repeat the earlier discovery and quota checks using this actual <code>LOCATION</code>. Confirm a currently supported Kubernetes version and Azure Linux 3 CVM mapping. Do not combine the pool with incompatible features such as FIPS, Trusted Launch, or Pod Sandboxing.</p>
+<h3>Create only after the checks pass</h3>
+<p>The following conditional example retains the source's three-node, three-zone Managed-disk plan. <strong>Use zones 1, 2, and 3 only if all three were verified for this subscription, region, and size.</strong> Change the zone argument to the verified set before running. Three nodes in a single zone do not provide multi-zone availability.</p>
+<pre><code class="language-bash">SKU="Standard_DC4as_v6"
+
+# MUTATING: creates a billable pool. Recheck zones and quota first.
+az aks nodepool add \
+  --resource-group "$RG" --cluster-name "$AKS" --name "$POOL" \
+  --mode User --node-count 3 --node-vm-size "$SKU" \
+  --os-type Linux --os-sku AzureLinux \
+  --node-osdisk-type Managed \
+  --zones 1 2 3 \
+  --max-surge 1</code></pre>
+<table><thead><tr><th>Option</th><th>Reason</th></tr></thead><tbody>
+<tr><td><code>--node-vm-size</code></td><td>Selects a supported CVM size; a label on an ordinary VM cannot enable hardware protection.</td></tr>
+<tr><td><code>--os-sku AzureLinux</code></td><td>Explicitly requests the Azure Linux CVM path. Omitting it can choose Ubuntu instead.</td></tr>
+<tr><td><code>--node-osdisk-type Managed</code></td><td>Keeps a conservative persistent OS disk baseline while the exact v6 ephemeral support discrepancy is unresolved.</td></tr>
+<tr><td><code>--max-surge 1</code></td><td>Plans one extra node during upgrade; this example needs an additional 4 vCPUs of headroom.</td></tr>
+<tr><td><code>--mode User</code></td><td>Sets the application-pool role, not the CVM protection itself.</td></tr>
+</tbody></table>
+<p>No custom dedicated taint is added. AKS selects a CVM-specific image from the supported size and OS combination. Do not invent a standalone-VM <code>--security-type</code> argument or require a preview-feature registration that the current AKS CVM guide does not require.</p>
+<p>The source's historical v5 alternative used <code>Standard_DC4as_v5</code> with only <code>--zones 1</code> in Southeast Asia. That is a conditional alternative for a cluster in that region, after fresh support and quota checks—not a current allocation promise or multi-zone HA configuration.</p>
+<h3>Verify configuration and function</h3>
+<pre><code class="language-bash">az aks nodepool show \
+  --resource-group "$RG" --cluster-name "$AKS" --name "$POOL" \
+  --query "{state:provisioningState,vmSize:vmSize,osSKU:osSKU,image:nodeImageVersion,count:count,zones:availabilityZones}" \
+  -o json
+
+# Use only an already-authorized context for the intended cluster.
+kubectl config current-context
+kubectl get nodes -l "kubernetes.azure.com/agentpool=$POOL" \
+  -L node.kubernetes.io/instance-type,topology.kubernetes.io/zone -o wide</code></pre>
+<p>Check <code>Succeeded</code>, the intended CVM size, the Azure Linux 3 CVM image and OS SKU, and Ready nodes. Obtaining credentials, if needed, changes kubeconfig and potentially the active context; do that deliberately. SKU/image inspection is configuration evidence, not application-level cryptographic attestation.</p>
+<h3>Migrate gradually</h3>
+<ol>
+<li>Establish the CVM pool and verify networking, storage, add-ons, and observability.</li>
+<li>Merge the desired selector into each sensitive workload and roll it out, retaining other necessary scheduling constraints.</li>
+<li>Verify real Pod placement, service behavior, PV access, throughput, latency, and logs.</li>
+<li>Move workloads incrementally with appropriate replicas, disruption budgets, and storage-zone compatibility.</li>
+<li>Keep a rollback path before retiring the old pool. Do not delete or drain it merely because new nodes report Ready.</li>
+</ol>
+
+<h2 id="upgrade-evidence">What the Ubuntu 24.04 upgrade actually established</h2>
+<p><strong>This is a separate historical lab observation, not an Azure Linux 3 upgrade measurement.</strong> On September 17, 2026, the source recorded the following configuration and result. Resource identities and raw logs are intentionally not published.</p>
+<table><thead><tr><th>Item</th><th>Recorded fact</th></tr></thead><tbody>
+<tr><td>Initial Kubernetes version</td><td>1.35.7</td></tr>
+<tr><td>Ordinary System pool</td><td>1 node, <code>Standard_D4as_v5</code></td></tr>
+<tr><td>CVM User pool</td><td>2 nodes, <code>Standard_DC4as_v6</code></td></tr>
+<tr><td>OS and disk</td><td>Ubuntu 24.04 and Managed OS Disk on both pools</td></tr>
+<tr><td>Recorded CVM image</td><td><code>AKSUbuntu-2404gen2CVMcontainerd-202609.03.1</code></td></tr>
+<tr><td>Sample</td><td>3 Deployments, each with 1 replica, scheduled to the CVM pool; initially Ready with a configured 30-second termination grace period</td></tr>
+<tr><td>Upgrade target and result</td><td>Kubernetes 1.36.3; control plane and both pools reported <code>Succeeded</code></td></tr>
+<tr><td>Final nodes</td><td>All 3 nodes Ready and on v1.36.3</td></tr>
+<tr><td>Replacement sample Pods</td><td>All 3 Ready on the CVM pool; reported container restart counts were 0</td></tr>
+</tbody></table>
+<blockquote><strong>Not established:</strong> actual shutdown duration, completion of the intended 20-second cleanup, compliance with the configured 30-second grace period, container exit codes, SIGKILL occurrence or absence, request loss, latency, or zero downtime. The source lacked sufficient termination timestamp and exit evidence. A successful upgrade and Ready replacement Pods do not fill that gap.</blockquote>
+<p>A restart count of zero on a <em>replacement</em> Pod does not mean the original Pod was never terminated, nor does it prove uninterrupted service. The three Deployments are independent single-replica applications, not three replicas of one highly available service. The System-pool node count is a lab fact, not current production guidance.</p>
+
+<h2 id="shutdown-sample">Read the sample before using it</h2>
+<p><a href="../downloads/aks-confidential-vm/cvm-graceful-test.yaml" download>Download the lab-only shutdown observation manifest</a>. It contains one Namespace, one ConfigMap with the Python program, and three single-replica Deployments. Replace all three <code>REPLACE_WITH_CVM_POOL</code> selectors before use. Confirm the cluster context and get workload-owner approval. Applying it creates resources and can consume billable capacity.</p>
+<p>The download preserves the source's application behavior, <code>python:3.12-slim</code> image reference, probes, resource settings, and security contexts. Only pool selectors and English safety notes are changed. This image is tag-pinned, not digest-pinned; identical bytes on a future pull are not guaranteed. No Service, PodDisruptionBudget, preStop hook, traffic generator, CI deployment, or availability mechanism has been added.</p>
+<h3>Intended behavior, not an observed timing result</h3>
+<table><thead><tr><th>Setting or code path</th><th>Actual meaning</th></tr></thead><tbody>
+<tr><td>Python runs directly as PID 1</td><td>The manifest uses a direct Python command rather than a shell wrapper. The program registers handlers for SIGTERM and SIGINT.</td></tr>
+<tr><td><code>shutdown_started</code></td><td>On the first handled signal, records UTC time, runtime Pod/node names, signal, and the configured timing constants; starts a monotonic elapsed timer and marks stopping.</td></tr>
+<tr><td>HTTP readiness</td><td>The HTTP handler returns 200 before stopping and 503 afterward. It behaves this way for any GET path, including the configured <code>/ready</code> probe.</td></tr>
+<tr><td>Probe settings</td><td>Readiness checks every 2 seconds with failure threshold 1. This is a configuration, not a measured upper bound on all traffic-removal delays.</td></tr>
+<tr><td><code>time.sleep(20)</code></td><td>Simulates cleanup. It does not process or persist real business work and does not measure request draining.</td></tr>
+<tr><td>Server shutdown and completion</td><td>After the sleep, stops the HTTP serving loop, closes the server, joins the worker, and logs <code>shutdown_completed</code> with rounded monotonic elapsed seconds and a literal <code>exit_code=0</code>.</td></tr>
+<tr><td><code>terminationGracePeriodSeconds: 30</code></td><td>The configured normal Pod termination budget; not a mandatory 30-second delay and not an Azure maintenance extension.</td></tr>
+</tbody></table>
+<p>Do not equate the literal <code>exit_code=0</code> log field with independent runtime exit-status evidence. In the normal program path Python falls through successfully after logging, but the container's actual exit status still needs to be collected separately. Total completion time includes signal handling, scheduling, the 20-second sleep, the HTTP server's shutdown polling, close/join work, and logging. It is not exactly 20 seconds by construction, and a heavily delayed process can exceed its nominal budget.</p>
+<p>The sample's HTTP server can still accept GET requests and return 503 during its simulated cleanup interval; it is not an implementation of production connection draining. Python's <a href="https://docs.python.org/3.12/library/socketserver.html">server shutdown contract</a> also distinguishes stopping the serving loop from request/thread handling. The source sample should remain a small signal-handling observation aid rather than an HA or transactional-correctness test.</p>
+<h3>Understand Kubernetes' termination budget</h3>
+<p>In the normal <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination">Pod termination flow</a>, kubelet initiates local shutdown and the container runtime normally signals PID 1. A configured preStop hook consumes the same grace budget before the stop signal; it does not get another independent 30 seconds. This sample has no such hook. Remaining processes can be forcefully killed when the grace period expires. Kubernetes documents edge cases, including a small one-off extension for a still-running preStop hook and restarted termination handling; do not treat 30 seconds as a universal wall-clock stopwatch for every failure mode.</p>
+<p>Readiness and endpoint propagation happen through separate control loops. Because the sample has no Service or traffic test, there is no evidence here about end-to-end traffic removal or request loss. Adding a single-replica PDB could block the intended drain and would change the experiment; it has deliberately not been added.</p>
+<h3>Collect the missing evidence in a separately authorized lab</h3>
+<ol>
+<li>Verify all three selectors, initial Pod identities, image identity, Ready state, and the 30-second grace setting before a planned test.</li>
+<li>Use an independent persistent log destination, or an observation tool that reconnects when the API connection drops. Node-local logs can disappear during reimage; deleted Pod logs may no longer be retrievable through kubectl.</li>
+<li>Correlate each original Pod's <code>shutdown_started</code> and <code>shutdown_completed</code> timestamps and elapsed field with the container runtime termination reason and exit code.</li>
+<li>Track replacement Pod identity, placement, readiness, and restart counts separately. If evaluating service continuity, design an appropriate traffic and availability test rather than assuming this manifest supplies one.</li>
+<li>Redact runtime Pod/node names and infrastructure details before sharing collected logs. A later standalone Pod-deletion experiment is additional evidence, not a reconstruction of the missing upgrade evidence.</li>
+</ol>
+
+<h2 id="adoption-checklist">Adopt CVM for the right threat model</h2>
+<p>CVM is valuable when the requirement includes protecting data in use from cloud-host access. If the immediate objective is general web-application security, identity, patching, secret management, and network controls may be higher-priority work. Treat confidential compute as an additional layer, not a substitute.</p>
+<ul>
+<li>Define the VM-level trust boundary and map every sensitive data path, including ingress, storage, and telemetry.</li>
+<li>Use a supported CVM size and OS image; separate Azure Linux 3 guidance from Ubuntu-based measurements.</li>
+<li>Start with ordinary System and CVM User pools when appropriate, then validate actual add-on and workload placement. Selectors do not reserve a pool exclusively.</li>
+<li>Verify SKU visibility, AKS eligibility, quota, zones, and capacity independently, including scale-out and surge headroom.</li>
+<li>Resolve the v6 maintenance and DCasv6 ephemeral-disk evidence conflicts for your exact configuration before relying on those features.</li>
+<li>Benchmark complete service behavior and total cost. Design for restarts and interrupted cleanup, not assumed live migration or a promised shutdown window.</li>
+<li>Use the sample as a lab-only observation aid. Do not promote its successful upgrade result into a graceful-shutdown, zero-downtime, or HA guarantee.</li>
+</ul>

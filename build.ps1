@@ -2,7 +2,7 @@ param([switch]$AllowPartial)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $output = Join-Path $root 'docs'
-$expected = @('acr-streaming', 'ai-gateway', 'ai-gateway-existing', 'cilium-network-policy', 'codex', 'envoy-gateway', 'istio-gateway-api', 'translation-performance', 'ase-frontend-scaling', 'managed-instance', 'self-hosted-aca', 'content-safety-streaming')
+$expected = @('acr-streaming', 'ai-gateway', 'ai-gateway-existing', 'cilium-network-policy', 'codex', 'envoy-gateway', 'istio-gateway-api', 'translation-performance', 'ase-frontend-scaling', 'managed-instance', 'self-hosted-aca', 'content-safety-streaming', 'aks-confidential-vm')
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 function Encode([string]$value) { [System.Net.WebUtility]::HtmlEncode($value) }
 . (Join-Path $root 'visuals.ps1')
@@ -158,7 +158,7 @@ $manifest = @{
     topicCount = $topics.Count
     topics = @($topics | ForEach-Object { @{ slug = $_.slug; title = $_.title; category = $_.category; sourceDocumentCount = @($_.sourceDocuments).Count; resourceCount = @($_.downloads).Count } })
     resources = @($resourceManifest | Sort-Object -Unique)
-    portalScreenshots = @($portalScreenshots.images | ForEach-Object { @{ id=$_.id; topic=$_.topic; path=$_.path; capturedOn=$portalScreenshots.capturedOn } })
+    portalScreenshots = @($portalScreenshots.images | ForEach-Object { @{ id=$_.id; topic=$_.topic; path=$_.path; capturedOn=(Get-PortalCaptureDate $_) } })
 }
 Write-Utf8 (Join-Path $output 'manifest.json') ($manifest | ConvertTo-Json -Depth 6)
 Write-Output "Built $($topics.Count) topics and $($resourceManifest.Count) resource links in $output"

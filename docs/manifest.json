@@ -1,6 +1,6 @@
 {
     "edition":  "2026-09",
-    "topicCount":  12,
+    "topicCount":  13,
     "topics":  [
                    {
                        "sourceDocumentCount":  3,
@@ -43,6 +43,13 @@
                        "category":  "AKS",
                        "resourceCount":  6,
                        "slug":  "istio-gateway-api"
+                   },
+                   {
+                       "sourceDocumentCount":  2,
+                       "title":  "AKS Confidential VMs: Azure Linux 3 Deployment and Honest Upgrade Evidence",
+                       "category":  "AKS",
+                       "resourceCount":  1,
+                       "slug":  "aks-confidential-vm"
                    },
                    {
                        "sourceDocumentCount":  1,
@@ -88,6 +95,18 @@
                    }
                ],
     "portalScreenshots":  [
+                              {
+                                  "capturedOn":  "2026-09-17",
+                                  "path":  "assets/portal/aks-cvm-os-options.png",
+                                  "id":  "aks-cvm-os-options",
+                                  "topic":  "aks-confidential-vm"
+                              },
+                              {
+                                  "capturedOn":  "2026-09-17",
+                                  "path":  "assets/portal/aks-cvm-size-picker.png",
+                                  "id":  "aks-cvm-size-picker",
+                                  "topic":  "aks-confidential-vm"
+                              },
                               {
                                   "capturedOn":  "2026-09-16",
                                   "path":  "assets/portal/apim-backends.png",
@@ -139,6 +158,7 @@
                       "downloads/ai-gateway-existing/test_legacy_usage.py",
                       "downloads/ai-gateway-existing/test_monitoring.py",
                       "downloads/ai-gateway-existing/v1test.http",
+                      "downloads/aks-confidential-vm/cvm-graceful-test.yaml",
                       "downloads/content-safety-streaming/base-policy.xml",
                       "downloads/content-safety-streaming/outbound-blocklist-policy.xml",
                       "downloads/content-safety-streaming/policy-payload.json",

@@ -164,6 +164,7 @@ pre { padding: 24px; margin: 24px 0; border: 1px solid var(--cp-border); border-
 .diagram-dashed { stroke-dasharray: 5 5; stroke: var(--cp-text-soft); }
 .diagram-edge-label { fill: var(--cp-text-muted); font-size: 10px; text-anchor: middle; }
 .diagram-guide, .chart-grid { fill: none; stroke: var(--cp-border); stroke-width: 1; }
+.diagram-boundary { fill: var(--cp-accent-soft); stroke: var(--cp-accent); stroke-width: 1.5; }
 .diagram-kicker { fill: var(--cp-text-soft); font-size: 9px; letter-spacing: 1.6px; }
 .chart-tick { fill: var(--cp-text-soft); font-size: 11px; text-anchor: middle; }
 .chart-label { fill: var(--cp-text); font-size: 13px; text-anchor: end; }

@@ -5,14 +5,15 @@ $portal = Get-Content (Join-Path $PSScriptRoot 'portal-screenshots.json') -Raw -
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Web.Extensions
 $jsonParser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-if ($manifest.topicCount -ne 12) { throw 'The public edition must contain exactly 12 topics.' }
+if ($manifest.topicCount -ne 13) { throw 'The public edition must contain exactly 13 topics.' }
+if (@($manifest.topics | Where-Object { $_.slug -eq 'aks-confidential-vm' -and $_.category -eq 'AKS' }).Count -ne 1) { throw 'The AKS CVM topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.slug -eq 'content-safety-streaming' -and $_.category -eq 'AI' }).Count -ne 1) { throw 'The Content Safety streaming topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.slug -eq 'self-hosted-aca' -and $_.category -eq 'GitHub' }).Count -ne 1) { throw 'The GitHub ACA runner topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.category -eq 'App Modernization' }).Count) { throw 'Excluded subject present.' }
 $files = @(Get-ChildItem $root -File -Recurse -Force)
 $problems = New-Object 'System.Collections.Generic.List[string]'
 $htmlFiles = @($files | Where-Object { $_.Extension -eq '.html' })
-if ($htmlFiles.Count -ne 13) { $problems.Add("Expected 13 HTML files, found $($htmlFiles.Count).") }
+if ($htmlFiles.Count -ne 14) { $problems.Add("Expected 14 HTML files, found $($htmlFiles.Count).") }
 $guidPattern = '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'
 $publicRoleIds = @('5e0bd9bd-7b93-4f28-af87-19fc36ad61bd') # Cognitive Services OpenAI User.
 $checks = @{

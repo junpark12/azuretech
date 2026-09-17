@@ -1,4 +1,21 @@
 {
+  "aks-confidential-vm": {
+    "title": "The confidential boundary is the node, not each Pod",
+    "caption": "Conceptual protection boundary. Supported CVM hardware protects guest memory and CPU state from the cloud host. The guest OS, kubelet, application Pods and node agents share the VM trust boundary; this does not create separate confidential enclaves for individual Pods. Disk encryption, TLS, application security and optional attestation-based key release remain separate controls. The managed AKS control plane is not shown.",
+    "boundary": {"x":254,"y":48,"width":454,"height":276,"label":"ONE CVM NODE / SHARED TRUST BOUNDARY"},
+    "nodes": [
+      {"x":24,"y":72,"title":"Cloud host","detail":"Outside guest boundary","icon":"layers"},
+      {"x":275,"y":82,"title":"Guest OS + kubelet","detail":"Inside the trust boundary","icon":"shield","accent":true},
+      {"x":526,"y":82,"title":"Application Pod A","detail":"Not a separate enclave","icon":"cluster"},
+      {"x":275,"y":232,"title":"Node agents","detail":"Review privileged access","icon":"tools"},
+      {"x":526,"y":232,"title":"Application Pod B","detail":"Same VM trust boundary","icon":"cluster"}
+    ],
+    "edges":[
+      {"d":"M445 122 H526","x":484,"y":110,"label":"runs Pods"},
+      {"d":"M360 162 V232","x":406,"y":200,"label":"node services"},
+      {"d":"M445 142 H480 V272 H526","x":490,"y":208,"label":"runs Pods"}
+    ]
+  },
   "content-safety-streaming": {
     "title": "Inspect response windows before forwarding more events",
     "caption": "Logical outbound inspection flow, not a timing or detection guarantee. APIM sends text windows to Content Safety and stops forwarding further events on a detected streaming violation. Overlap can reduce boundary misses but adds repeated inspection; previously delivered content cannot be recalled. The baseline download alone does not enable these checks.",

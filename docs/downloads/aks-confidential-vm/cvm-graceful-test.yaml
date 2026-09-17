@@ -1,0 +1,280 @@
+# Lab-only shutdown observation sample; not a highly available application.
+# Replace all three REPLACE_WITH_CVM_POOL values with the existing CVM pool name.
+# Kubernetes does not expand environment variables in this YAML.
+# Confirm the cluster context and obtain workload-owner approval before applying.
+# Changes from the source: parameterized pool selectors and English safety notes.
+# Image, Python program, probes, resource limits, and security settings are unchanged.
+# Three independent single-replica Deployments; no Service, PDB, or preStop hook.
+# The 20-second sleep is simulated cleanup, not measured request draining.
+# The 30-second Pod grace period includes shutdown overhead, not only that sleep.
+# Logs contain runtime Pod/node names; redact them before sharing.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cvm-graceful-test
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: graceful-app
+  namespace: cvm-graceful-test
+data:
+  app.py: |
+    import json
+    import os
+    import signal
+    import threading
+    import time
+    from datetime import datetime, timezone
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    stopping = threading.Event()
+    received_at = None
+
+    def log(event, **fields):
+        print(json.dumps({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": event,
+            "pod": os.environ["POD_NAME"],
+            "node": os.environ["NODE_NAME"],
+            **fields,
+        }), flush=True)
+
+    def terminate(signum, frame):
+        global received_at
+        if not stopping.is_set():
+            received_at = time.monotonic()
+            log("shutdown_started", signal=signal.Signals(signum).name,
+                cleanup_seconds=20, grace_period_seconds=30)
+            stopping.set()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            ready = not stopping.is_set()
+            body = json.dumps({"pod": os.environ["POD_NAME"], "ready": ready}).encode()
+            self.send_response(200 if ready else 503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
+    server = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    log("started", cleanup_seconds=20, grace_period_seconds=30)
+    stopping.wait()
+    time.sleep(20)
+    server.shutdown()
+    server.server_close()
+    worker.join()
+    log("shutdown_completed", elapsed_seconds=round(time.monotonic() - received_at, 3),
+        exit_code=0)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graceful-1
+  namespace: cvm-graceful-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: graceful-1
+  template:
+    metadata:
+      labels:
+        app: graceful-1
+        test: cvm-graceful
+    spec:
+      nodeSelector:
+        kubernetes.azure.com/agentpool: REPLACE_WITH_CVM_POOL
+      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: python:3.12-slim
+          command: ["python", "-u", "-B", "/app/app.py"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 2
+            failureThreshold: 1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: graceful-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graceful-2
+  namespace: cvm-graceful-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: graceful-2
+  template:
+    metadata:
+      labels:
+        app: graceful-2
+        test: cvm-graceful
+    spec:
+      nodeSelector:
+        kubernetes.azure.com/agentpool: REPLACE_WITH_CVM_POOL
+      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: python:3.12-slim
+          command: ["python", "-u", "-B", "/app/app.py"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 2
+            failureThreshold: 1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: graceful-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graceful-3
+  namespace: cvm-graceful-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: graceful-3
+  template:
+    metadata:
+      labels:
+        app: graceful-3
+        test: cvm-graceful
+    spec:
+      nodeSelector:
+        kubernetes.azure.com/agentpool: REPLACE_WITH_CVM_POOL
+      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: python:3.12-slim
+          command: ["python", "-u", "-B", "/app/app.py"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 2
+            failureThreshold: 1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: graceful-app

@@ -1,0 +1,28 @@
+{
+  "slug": "aks-confidential-vm",
+  "category": "AKS",
+  "title": "AKS Confidential VMs: Azure Linux 3 Deployment and Honest Upgrade Evidence",
+  "summary": "Understand the node-level trust boundary, placement, cost, SKU and quota checks, storage and maintenance limitations, and an Ubuntu 24.04 CVM upgrade observation with a sanitized shutdown-test manifest.",
+  "bodyFile": "aks-confidential-vm.html",
+  "sourceDocuments": [
+    "AKS Azure Linux 3 Confidential VM: Benefits, Considerations, Regions, and Deployment Guide",
+    "Confidential VM Graceful Shutdown Observation Sample"
+  ],
+  "downloads": [
+    {
+      "path": "downloads/aks-confidential-vm/cvm-graceful-test.yaml",
+      "label": "Download the CVM shutdown observation YAML",
+      "description": "Lab-only Namespace, Python ConfigMap, and three single-replica Deployments. Replace every REPLACE_WITH_CVM_POOL selector before use. No Service, PDB, preStop hook, or high-availability guarantee."
+    }
+  ],
+  "omissions": [
+    "Private repository links, source screenshots, raw observation logs, kubeconfig, subscription and tenant identifiers, resource identifiers, customer names, hostnames, IP addresses, personal paths, and contact information are not published.",
+    "Subscription-specific quota inventory, quota-request outcomes, support case details, and support status are replaced with anonymous decision examples, not current account records.",
+    "Internal, early-access, and staging region names are not published as deployment candidates.",
+    "No shutdown-duration, exit-code, SIGKILL, request-loss, latency, pricing, or availability measurements are invented: the source did not establish them.",
+    "The sample retains its image and application behavior; only pool selectors and English safety notes differ. No Service, PDB, preStop hook, traffic generator, production scheduling change, or privileged test has been added.",
+    "The recorded upgrade used Ubuntu 24.04, not Azure Linux 3. Azure Linux 3 provisioning and the Ephemeral OS Disk alternatives are guidance, not newly executed validation.",
+    "Current public DCasv6 Ephemeral OS Disk support conflicts with the source AKS capability response; the article exposes this unresolved discrepancy rather than declaring universal support or non-support. The v6 memory-preserving maintenance discrepancy likewise remains unresolved.",
+    "The broad one-subscription region inventory is condensed into dated public-region examples and repeatable discovery, not republished as a current availability matrix."
+  ]
+}
