@@ -1,0 +1,16 @@
+{
+  "slug": "cilium-network-policy",
+  "category": "AKS",
+  "title": "네트워크 정책이 없는 AKS를 Cilium으로 마이그레이션하기",
+  "summary": "측정 기록이 있는 Azure CNI Overlay 마이그레이션을 재현하고 DNS, 네임스페이스 간 통신, 외부 접근 정책을 단계적으로 적용합니다.",
+  "bodyFile": "cilium-network-policy.html",
+  "sourceDocuments": ["AKS 네트워크 정책 마이그레이션 검증 보고서: None에서 Cilium으로"],
+  "downloads": [],
+  "omissions": [
+    "관찰된 노드 및 Pod 이름, 리소스 식별자, 실제 네트워크 주소는 생략했습니다. 테스트 타임스탬프, 버전, 측정 소요 시간과 결과는 보존했습니다.",
+    "이 폴더에는 독립된 YAML 파일이 없습니다. 리소스 다운로드를 임의로 만들지 않고 원본의 모든 정책 패턴을 본문에 유지했습니다.",
+    "업스트림 기능 가용성과 사용 중지 날짜에 관한 주장은 원본 작성 당시의 안내로 유지하고 명시적인 확인 주의 사항을 덧붙였습니다."
+  ],
+  "sourceJsonSha256": "62e6b6886b30763a3d5ab2fd201a77496663361ec615634ff45a3385ce119812",
+  "sourceBodySha256": null
+}

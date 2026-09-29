@@ -1,0 +1,287 @@
+<h2 id="scope">범위: 배포 지침과 별도의 업그레이드 관찰</h2>
+<p>기밀 가상 머신(Confidential Virtual Machine, CVM)은 AKS 노드 주위에 하드웨어로 강제되는 경계를 추가합니다. 민감한 워크로드를 enclave SDK에 맞게 다시 작성하지 않고도 클라우드 호스트와 하이퍼바이저에 대한 신뢰를 줄여야 할 때 유용합니다. 모든 컨테이너를 별도의 신뢰 실행 환경으로 만들거나, 애플리케이션을 자동으로 보호하거나, 일반적인 Kubernetes 운영 책임을 없애 주지는 않습니다.</p>
+<blockquote><strong>근거의 범위.</strong> 이 문서는 2026년 9월 엔지니어링 가이드를 번역하고 바로잡은 것입니다. 지역 및 할당량 관찰은 9월 15일에 시작되었으며 구성과 일부 기능 확인은 9월 17일에 갱신되었습니다. 이는 과거의 구독별 관찰이며 공식 가용성 약속이 아닙니다. 프로비저닝 절차는 <strong>Azure Linux 3</strong>를 대상으로 하지만 기록된 Kubernetes 업그레이드는 <strong>Ubuntu 24.04</strong>를 사용했습니다. 이 게시물을 위해 새 클러스터 배포, 업그레이드, 할당량 요청, 성능 테스트, 종료 시간 측정을 수행하지 않았습니다. 배포 전에 최신 공식 지원, 구독 제약, 할당량, 할당 가능한 용량을 다시 확인하세요.</blockquote>
+<p>실용적인 출발점은 일반 System 풀과 CVM User 풀을 구성하고 워크로드별 배치 규칙을 적용하되 CVM 풀에 사용자 지정 전용 taint를 두지 않는 것입니다. 이는 운영 기준선이지 독점 사용이나 고가용성 보장이 아닙니다. 이 문서는 신뢰 경계, 비용, 유지 관리, OS 디스크 선택, 지역 검색, 할당량 계획, 배포, 마이그레이션, 종료 샘플이 실제로 입증한 내용을 다룹니다.</p>
+
+<h2 id="security-boundary">세 가지 보호 수단과 서로 다른 역할</h2>
+<table><thead><tr><th>보호 수단</th><th>해결하는 대상</th><th>입증하지 않는 것</th></tr></thead><tbody>
+<tr><td>CVM</td><td>사용 중인 데이터: 지원되는 AMD SEV-SNP 하드웨어와 CVM 전용 노드 이미지를 통해 VM 메모리와 실행 상태를 하이퍼바이저 및 호스트 관리 코드로부터 보호합니다.</td><td>애플리케이션이 침해될 수 없다거나 서로 신뢰하지 않는 Pod들이 하드웨어로 서로 격리된다는 뜻은 아닙니다.</td></tr>
+<tr><td>디스크 암호화</td><td>저장된 데이터. Azure Managed Disks는 기본적으로 플랫폼 관리형 키를 사용하는 서버 측 암호화를 적용합니다. 고객 관리형 키는 별도 구성 선택 사항입니다.</td><td>애플리케이션 프로세스의 평문 보호, 전송 중 TLS, 모든 기밀 디스크 암호화 옵션의 자동 활성화를 뜻하지 않습니다.</td></tr>
+<tr><td>애플리케이션 및 플랫폼 보안</td><td>취약점 관리, 최소 권한, 비밀 처리, 이미지 출처, 네트워크 제한, 안전한 로깅.</td><td>이러한 제어는 CVM 노드에서도 여전히 필요합니다.</td></tr>
+</tbody></table>
+<p>TLS는 전송 중인 데이터를 보호하며 CVM 보호는 데이터 수명 주기의 다른 단계를 다룹니다. Persistent Volume, 외부 데이터베이스, 일반 노드의 수신 프록시, CVM 외부의 로그 대상이 자동으로 CVM 경계 안에 포함되지는 않습니다. 수신과 TLS 종료부터 처리, 저장, 원격 분석, 백업까지 민감한 데이터의 경로를 추적하세요.</p>
+<h3>노드 VM이 신뢰 경계입니다</h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/aks/use-cvm">AKS CVM 문서</a>는 CVM 노드의 모든 Pod를 동일한 신뢰 경계에 명시적으로 배치합니다. 게스트 OS, 커널, kubelet, 노드 에이전트, 애플리케이션 Pod는 이 VM 경계를 공유합니다. Kubernetes 관리자 접근, 게스트 root, 권한 있는 컨테이너, 취약한 에이전트는 여전히 중요합니다. CVM은 Pod Sandboxing이 아니며 Pod별 TEE도 아닙니다.</p>
+<p>이는 Deployment, Service, 확장 패턴을 유지하면서 민감한 고객·금융·규제 대상 데이터에 대한 인프라 운영자의 접근과 관련된 요구 사항에 대응하는 데 도움이 될 수 있습니다. 그 자체로 인증이나 규정 준수를 달성하지는 않습니다. 애플리케이션 코드는 그대로일 수 있지만 스케줄링, 스토리지, 가용성, OS 종속 통합은 여전히 테스트해야 합니다.</p>
+<h3>증명과 비밀 제공은 침입 탐지가 아닙니다</h3>
+<p>vTPM은 키와 부팅 측정값을 보호합니다. 증명(attestation)은 실행 플랫폼과 보안 구성에 대한 근거를 검증합니다. Azure는 CVM 수명 주기에서 플랫폼 증명을 사용합니다. 검증된 환경에만 비밀을 제공하는 애플리케이션별 정책은 별도의 설계입니다. CVM 노드 풀을 만들기만 하는 데 그 애플리케이션 정책을 구현할 필요는 없습니다.</p>
+<p>필요한 경우 ID, 검증, 권한 부여, 갱신 동작을 포함하여 의도적으로 설계한 비밀 또는 키 제공 정책에 게스트 증명을 연결하세요. 이를 애플리케이션 침해를 자동으로 감지하고 메모리를 다시 잠그는 메커니즘으로 설명하지 마세요. 증명 성공은 이후의 애플리케이션 취약점이나 자격 증명 오용을 방지하지 않습니다. <a href="https://learn.microsoft.com/en-us/azure/confidential-computing/confidential-vm-overview">기밀 VM 개요</a>를 참조하세요.</p>
+
+<h2 id="pool-placement">System 풀, User 풀, 실제에 맞는 배치 규칙</h2>
+<p><strong>System/User는 풀의 역할을, CVM/일반 VM은 하드웨어 보호를 설명합니다.</strong> CVM이 본질적으로 User 풀 전용인 것은 아닙니다. System 풀과 CVM의 모든 제약을 충족하면 System 풀도 지원되는 CVM SKU와 OS를 사용할 수 있습니다. System 풀 구성 요소가 위협 모델에 포함된 정보를 처리한다면 이를 보호하는 것이 적절할 수 있지만 CVM User 노드의 메모리 보호를 위한 필수 조건은 아닙니다.</p>
+<p>System 풀은 AKS 관리형 컨트롤 플레인도 아닙니다. VM 크기나 보호를 변경해도 관리형 API 서버 또는 etcd가 사용자의 CVM 노드 풀이 되지는 않습니다. 현재 <a href="https://learn.microsoft.com/en-us/azure/aks/use-system-pools">System 풀 문서</a>는 Linux, 최소 30개 Pod 지원, VM당 최소 4 vCPU와 4 GB 메모리, 최소 2개의 System 노드를 요구하며 3개를 권장합니다. 뒤에 나오는 과거 실험 관찰의 단일 노드 System 풀은 프로덕션 크기 권장 사항이 아닙니다.</p>
+<table><thead><tr><th>풀</th><th>의도한 용도</th><th>배치 책임</th></tr></thead><tbody>
+<tr><td>일반 System 풀</td><td>CoreDNS, metrics-server 같은 중앙 시스템 서비스.</td><td>풀 모드는 스케줄링에 영향을 주지만 원하는 모든 배치를 단독으로 강제하지는 않습니다.</td></tr>
+<tr><td>필요한 경우 일반 User 풀</td><td>기밀 컴퓨팅이 필요 없는 일반 애플리케이션.</td><td>CVM 노드에 배치되지 않아야 하는 애플리케이션에는 자체 풀 선택자를 지정하세요.</td></tr>
+<tr><td>CVM User 풀</td><td>민감한 애플리케이션과 이를 실행하는 데 필요한 노드 로컬 구성 요소.</td><td>애플리케이션 선택자에서 AKS 에이전트 풀 레이블을 사용하세요. 기준선은 사용자 지정 전용 taint를 추가하지 않습니다.</td></tr>
+</tbody></table>
+<h3>필수 노드 에이전트를 실수로 제외하지 마세요</h3>
+<p>네트워크 및 CSI 노드 드라이버는 해당 노드 수준 기능이 필요한 위치에 있어야 합니다. 로그 및 메트릭 수집기에도 각 CVM 노드의 DaemonSet이 필요할 수 있습니다. 중앙 CSI 컨트롤러와 metrics-server는 모든 노드에서 실행될 필요가 없습니다. App Routing과 다른 추가 기능은 이름이나 네임스페이스가 아니라 실제 컨트롤러 및 데이터 경로 역할을 기준으로 평가해야 합니다.</p>
+<p>사용자 지정 taint가 없는 기준선은 필수 에이전트와 추가 기능을 의도치 않게 차단하는 일을 피합니다. CVM 보호를 활성화하는 데 taint는 필요하지 않습니다. 반대로 <code>kube-system</code> 소속이거나 DaemonSet이라는 이유로 Pod가 임의의 사용자 지정 taint를 면제받지는 않습니다. taint를 도입한다면 각 구성 요소에서 지원하는 toleration을 확인하세요. 관리형 DaemonSet을 수동으로 수정하면 조정 또는 업그레이드가 이를 되돌릴 수 있습니다. <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/">taint와 toleration</a>을 참조하세요.</p>
+<p>노드 Ready는 첫 확인에 불과합니다. DNS, Pod 간 통신, PVC 연결 및 읽기/쓰기, 메트릭, 로그, 라우팅을 검증하세요. 권한 있는 에이전트를 배포하거나 스케줄링 규칙을 수정할 수 있는 주체를 제한하세요. 동일한 CVM 노드의 신뢰할 수 없는 권한 있는 워크로드도 공유 게스트 신뢰 경계 안에 있습니다.</p>
+<h3>선택자는 전체 풀이 아닌 하나의 워크로드를 제한합니다</h3>
+<pre><code class="language-yaml"># Merge into the sensitive Deployment's spec.template.spec.
+nodeSelector:
+  kubernetes.azure.com/agentpool: REPLACE_WITH_CVM_POOL
+
+# For a different, ordinary workload, use its own ordinary User pool instead:
+# nodeSelector:
+#   kubernetes.azure.com/agentpool: REPLACE_WITH_GENERAL_POOL</code></pre>
+<p>자리 표시자를 실제 풀 이름으로 바꾸세요. Kubernetes는 매니페스트 안의 셸 변수를 확장하지 않습니다. <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/">nodeSelector</a>는 필수 스케줄링 제약입니다. 적합한 CVM 노드가 없으면 새로 스케줄링되는 Pod는 일반 풀로 대체 배치되지 않고 Pending 상태로 남습니다. 기존 선택자와 필수 노드 어피니티도 충족해야 합니다.</p>
+<p><strong>이는 독점 예약이 아닙니다.</strong> 선택자가 없는 애플리케이션을 포함하여 다른 적격 Pod도 CVM 풀에 배치될 수 있습니다. 일반 워크로드의 배치도 관리하고 강제가 필요하면 승인 정책을 사용하세요. 레이블은 암호학적 증명도 Pod별 격리도 아닙니다. 이 예시를 변경해도 기존 풀에 이미 있는 taint는 제거되지 않습니다.</p>
+
+<h2 id="cost-and-compatibility">비용, 성능, 지원되는 조합</h2>
+<p><a href="https://learn.microsoft.com/en-us/azure/azure-linux/faq-aks">Azure Linux에는 추가 OS 사용 요금이 없습니다</a>. CVM의 가격 인상률이 보편적으로 정해져 있다고 가정하지 말고 선택한 VM과 디스크 가격, 운영 토폴로지, 달성한 처리량을 비교하세요.</p>
+<table><thead><tr><th>비용 요인</th><th>비교할 항목</th></tr></thead><tbody>
+<tr><td>VM 가격</td><td>지역, 세대, CPU/메모리 크기, 상업적 조건, 할인. 이 문서는 공식 인상 비율이나 견적을 제공하지 않습니다.</td></tr>
+<tr><td>워크로드 성능</td><td>동일한 처리량과 p95/p99 지연 시간을 충족하는 데 필요한 노드 수. CPU, 메모리, I/O 패턴에 따라 결과가 달라질 수 있습니다.</td></tr>
+<tr><td>별도 풀</td><td>배치 규칙 때문에 다른 워크로드가 빌려 쓸 수 없는 유휴 용량과 지속되는 System 풀 비용.</td></tr>
+<tr><td>마이그레이션 및 업그레이드</td><td>기존 풀과 새 풀의 동시 운영, 서지 노드, 임시 디스크 또는 운영 리소스.</td></tr>
+<tr><td>스토리지 및 키</td><td>AKS에서 실제로 지원되는 구성. 독립형 CVM 문서는 VMGS 스토리지와 선택적인 Confidential OS 디스크 암호화 비용을 다룹니다. 모든 독립형 옵션이 AKS에 그대로 적용된다고 가정하지 마세요.</td></tr>
+</tbody></table>
+<pre><code>Monthly cost difference
+  = new CVM pool VM and disk cost
+  - replaced ordinary pool VM and disk cost
+  + additional operating resources</code></pre>
+<p>할당량 승인은 리소스 사용 요금이 아니며 용량 예약도 아닙니다. 실제로 할당된 리소스에는 요금이 발생할 수 있습니다. 예산 수립에는 최신 <a href="https://azure.microsoft.com/pricing/calculator/">Azure 가격</a>과 계약을 사용하세요. 여기서는 가용성 비율, 측정된 성능 저하, SLA 개선을 추론하지 않습니다.</p>
+<h3>독립형 VM 문서뿐 아니라 AKS 지원 표를 확인하세요</h3>
+<ul>
+<li>지원되는 AMD CVM 크기는 SEV-SNP를 사용합니다. 현재 AKS CVM 페이지는 이 조합에서 Intel TDX 기반 CVM, ARM64, Windows 풀, FIPS, Trusted Launch, Pod Sandboxing을 지원하지 않습니다. CVM Secure Boot 기능은 별도 Trusted Launch 기능 활성화와 같지 않습니다.</li>
+<li>현재 표는 Azure Linux 3의 <code>AzureLinux</code> CVM 지원을 명시하며 Kubernetes 1.28–1.36에서 이를 기본값으로 지정합니다. 이는 OS 매핑 범위이지 지원이 종료된 Kubernetes 버전을 배포해도 된다는 뜻이 아닙니다.</li>
+<li><code>Ubuntu2404</code> CVM 지원 범위는 Kubernetes 1.32–1.38로 명시되어 있습니다. 일반 <code>Ubuntu</code> CVM 기본값은 Kubernetes 1.35–1.38에서 Ubuntu 24.04입니다. 조회한 표에서는 Ubuntu 22.04를 AKS CVM에서 지원하지 않습니다. 버전을 선택하기 전에 최신 표를 확인하세요.</li>
+<li>Azure Linux with OS Guard, Flatcar, Azure Container Linux는 서로 다른 OS 선택 사항이며 조회한 표에서는 CVM을 지원하지 않습니다. 이름이 비슷한 OS 제품을 서로 바꿔 쓸 수 있다고 가정하지 마세요.</li>
+<li>레이블만 바꾸거나 현재 위치에서 크기를 변경하려고 시도하여 일반 풀을 CVM으로 전환하지 마세요. 지원되는 새 CVM 풀을 만들고 워크로드를 마이그레이션하세요.</li>
+<li>정확한 SKU의 네트워크 기능을 확인하세요. 조회한 DCasv5, DCasv6, DCadsv6 사양은 가속 네트워킹을 미지원으로 명시합니다. 이는 OS 디스크 지원과 별개입니다.</li>
+</ul>
+<p>가이드의 Azure Linux 3 확장 맥락은 2026년 6월 AKS CVM 릴리스를 가리킵니다. 기존 일반 Azure Linux 노드가 자동으로 기밀 노드가 되었다는 뜻은 아닙니다. 지원되는 CVM 크기와 특수 노드 이미지가 필수입니다.</p>
+
+<h2 id="maintenance">유지 관리: 재시작과 복구를 고려한 설계</h2>
+<p><a href="https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/dcasv5-series">DCasv5 사양</a>은 Live Migration과 Memory Preserving Updates를 미지원으로 명시합니다. 실행 상태를 보존하면서 실행 중인 프로세스를 다른 호스트로 옮기는 것에 의존하지 마세요. 라이브 마이그레이션을 성공적으로 사용할 수 있는 구성과 비교하면 일부 호스트 유지 관리에는 애플리케이션 재시작이나 사전 애플리케이션 수준 장애 조치가 필요할 수 있습니다.</p>
+<blockquote><strong>운영상의 가능성이지 측정된 빈도가 아닙니다.</strong> 원본은 CVM이 얼마나 자주 재시작하는지 측정하지 않았습니다. 모든 업데이트가 노드를 재부팅한다거나 이전 Freeze 횟수만큼 CVM이 재부팅된다거나 일반 VM의 라이브 마이그레이션이 항상 성공한다는 주장이 아닙니다. 호스트가 실패하면 마이그레이션 기회 자체가 없을 수도 있습니다.</blockquote>
+<p><strong>미해결 v6 불일치:</strong> 9월 17일 원본의 AKS SKU 응답은 <code>MemoryPreservingMaintenanceSupported=True</code>를 보고했으며 해당 SKU는 <code>Standard_DC4as_v6</code> 및 <code>Standard_DC4ads_v6</code>였습니다. 이 문서를 위해 조회한 공개 <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/dcasv6-series#feature-support">DCasv6</a> 및 <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/dcadsv6-series#feature-support">DCadsv6</a> 사양은 여전히 Live Migration과 Memory Preserving Updates를 모두 미지원으로 명시합니다. 이는 서로 다른 근거 출처이며 지원 여부가 확정된 설명이 아닙니다. 정확한 AKS SKU, 이미지, 지역, 유지 관리 이벤트에 무엇이 적용되는지 Azure 지원에 문의하세요. 해당 API 필드는 Live Migration 지원을 증명하지 않습니다.</p>
+<p>단순히 잠깐의 일시 중지를 견디는 수준이 아니라 프로세스 재시작에도 지속되는 서비스를 설계하세요. 복제본, 적절한 장애 도메인 간 배치, 지속성 있는 외부 상태, 멱등 재시도, 유지 관리 계획을 사용하세요. PodDisruptionBudget은 정상 드레인 중 지원되는 자발적 퇴거를 제한할 수 있지만 하드웨어 장애를 막거나 플랫폼 유지 관리 기한을 강제하거나 VM 재부팅을 방지할 수는 없습니다.</p>
+<table><thead><tr><th>이벤트</th><th>종료 기회</th><th>중요한 한계</th></tr></thead><tbody>
+<tr><td>일반 AKS 노드 풀 업그레이드</td><td>Cordon/drain과 정상 Pod 종료 과정에서 신호 처리, 적절한 유예 기간, 선택적인 preStop 훅을 사용할 수 있습니다.</td><td>애플리케이션 정리는 여전히 가용 시간 예산 안에 완료되어야 합니다.</td></tr>
+<tr><td>플랫폼 Redeploy</td><td>AKS 노드 자동 드레인이 cordon과 drain을 시도합니다.</td><td>최선 노력 방식입니다. 부족한 사전 통지, 기한, 실패 때문에 완료하지 못할 수 있습니다.</td></tr>
+<tr><td>플랫폼 Reboot</td><td>AKS 노드 자동 드레인 표는 동작 없음을 명시합니다.</td><td>게스트 OS/kubelet 종료 동작은 별개입니다. 모든 Pod에 전체 유예 기간이 주어진다고 가정하지 마세요.</td></tr>
+<tr><td>갑작스러운 하드웨어 장애</td><td>종료 신호가 아예 도착하지 않을 수 있습니다.</td><td>복구가 정상 종료에만 의존해서는 안 됩니다.</td></tr>
+</tbody></table>
+<p><a href="https://learn.microsoft.com/en-us/azure/aks/node-auto-drain">AKS 노드 자동 드레인</a>과 <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/linux/scheduled-events">Scheduled Events</a>를 참조하세요. 사전 통지가 있다면 새 작업 수락을 중단하고 적절한 진행 중 작업을 완료하며 체크포인트를 저장하고 연결을 해제하고 역할을 인계하세요. <code>terminationGracePeriodSeconds</code>는 Kubernetes의 정상 Pod 종료 시간 예산을 제어합니다. Azure가 그 기간만큼 플랫폼 유지 관리를 연기하도록 강제하지는 않습니다.</p>
+<p>정상 종료는 중단 전에 정리하는 데 도움이 됩니다. 복제, 외부 상태, 재시도는 정리가 불가능할 때 도움이 됩니다. 둘 다 필요합니다.</p>
+
+<h2 id="os-disks">Managed와 Ephemeral OS Disk: 정확한 조합 확인</h2>
+<p>DCasv5의 제약을 “CVM은 Ephemeral OS Disk를 전혀 지원하지 않는다”로 일반화하지 마세요. 하드웨어 로컬 스토리지, 지원되는 임시 디스크 배치, AKS 이미지 지원, 적절한 OS 디스크 크기는 각각 별도의 확인 항목입니다. Ephemeral OS 디스크 쓰기는 VM 로컬 스토리지에 저장되며 재배포나 재이미징 같은 이벤트에서 지속되지 않습니다. 애플리케이션 상태는 적절한 영구 스토리지에 보관하세요.</p>
+<table><thead><tr><th>SKU</th><th>근거</th><th>해석</th></tr></thead><tbody>
+<tr><td><code>Standard_DC4as_v5</code></td><td>공개 DCasv5 사양: 로컬 스토리지 없음, Ephemeral OS Disk 미지원.</td><td>지원되는 영구 OS 디스크 구성을 사용하세요.</td></tr>
+<tr><td><code>Standard_DC4as_v6</code></td><td>원본 AKS 기능 쿼리: Ephemeral OS Disk 미지원. 이 문서를 위해 조회한 공개 DCasv6 사양: Ephemeral OS Disk 지원이면서 로컬 스토리지 없음으로도 명시.</td><td><strong>미해결 문서/API 불일치입니다.</strong> AKS에 대해 보편적인 지원/미지원 결론을 게시하지 마세요. 절차에서는 보수적으로 Managed OS Disk를 유지합니다.</td></tr>
+<tr><td><code>Standard_DC4ads_v6</code></td><td>공개 사양: 로컬 스토리지 150 GiB, Ephemeral OS Disk 지원. 원본 AKS 쿼리: <code>MaxResourceVolumeMB=153600</code>, <code>EphemeralOSDiskSupported=True</code>, <code>SupportedEphemeralOSDiskPlacements=ResourceDisk</code>.</td><td>기능 쿼리상 후보이며 <strong>성공적으로 배포된 Azure Linux 3 임시 디스크 풀이 아닙니다</strong>. 채택 전에 전체 조합을 검증하세요.</td></tr>
+</tbody></table>
+<p>임시 디스크 후보라면 대상 지역과 구독의 접근 가능 여부, 정확한 AKS OS/이미지 조합, 지원되는 배치, 이미지와 요청한 OS 디스크 크기가 모두 사용 가능한 로컬 스토리지에 들어맞는지 확인하세요. 기본 디스크 크기가 너무 클 수 있습니다. 이미지가 지원하는 요구 사항보다 임의로 줄이지 마세요. 일반 <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/ephemeral-os-disks">Ephemeral OS Disk 문서</a>도 캐싱 모드와 크기 지정을 구분합니다. 모든 독립형 VM 옵션이 AKS에서 노출되거나 지원된다고 추론하지 마세요.</p>
+<p><code>--node-osdisk-type Managed</code>만 <code>Ephemeral</code>로 바꾸는 것은 완전한 마이그레이션 계획이 아닙니다. 검증된 후보에는 다른 SKU, <code>--node-osdisk-type Ephemeral</code>, 적절한 명시적 OS 디스크 크기가 필요할 수 있습니다. <code>standardDCasv6Family</code> 할당량은 <code>standardDCadsv6Family</code>에 적용되지 않습니다. 임시 디스크 배치와 Confidential OS 디스크 암호화는 별개 선택 사항입니다.</p>
+
+<h2 id="sku-quota">SKU 표시, AKS 지원, 할당량, 용량은 네 가지 관문입니다</h2>
+<p><strong>카탈로그나 Portal 선택기에서 크기를 찾는 것은 배포 검증이 아닙니다.</strong> 선택 가능한 항목이 전체 OS/버전 조합, 충분한 할당량, 남은 물리 용량을 증명하지는 않습니다. 아래 과거 목록과 지원 요청은 계정 기록을 다시 게시하는 대신 익명화된 의사 결정 패턴으로 축약했습니다.</p>
+<table><thead><tr><th>관문</th><th>수집할 근거</th><th>여전히 입증되지 않은 것</th></tr></thead><tbody>
+<tr><td>Compute 카탈로그</td><td><code>az vm list-skus --all</code>, 위치/영역 정보, 제한 사항.</td><td>AKS 적격 여부, OS/이미지 지원, 할당량, 실제 할당.</td></tr>
+<tr><td>AKS 크기 적격 여부</td><td><code>az aks list-vm-skus --all</code>과 최신 AKS CVM 지원 문서.</td><td>정확한 OS/버전/기능의 배포 성공, 할당량, 실제 할당.</td></tr>
+<tr><td>할당량</td><td>제품군 및 총 지역 vCPU 한도와 유효한 사용량 값.</td><td>물리 용량의 예약이나 가용성.</td></tr>
+<tr><td>할당 용량</td><td>실제 승인된 할당 결과 또는 독립적으로 적용 가능한 용량 확보 방식.</td><td>향후 스케일 아웃 및 업그레이드 용량의 영구 보장.</td></tr>
+</tbody></table>
+<h3>지역 조사가 보여 주는 것</h3>
+<p>조사는 대표적인 4-vCPU 모델 8개를 살펴보았습니다. DC4as, DC4ads, EC4as, EC4ads 각각의 v5 및 v6입니다. DC는 범용이고 EC는 메모리 최적화입니다. 이 제품군에서 <code>ads</code> 변형은 로컬 임시 스토리지를 포함하고 <code>as</code> 변형은 포함하지 않습니다. 한 크기의 결과를 제품군의 모든 크기로 일반화해서는 안 됩니다.</p>
+<p><strong>과거 카탈로그 예시일 뿐입니다.</strong> 한국 중부와 미국 동부 2는 대표 v6 항목을 반환했고 일부 DC4 v6 크기는 AKS 목록에서도 발견되었습니다. 해당 조사에서는 대표 v5 항목이 반환되지 않았습니다. 동남아시아는 두 세대와 일부 DC4 모델을 AKS 목록에서 반환했습니다. 관찰된 v5 영역 목록에는 논리 영역 1만 있었고 v6에는 1과 2가 있었습니다. 일본 동부는 v5 구독 제약과 제한 없는 v6 카탈로그 항목을 보여 주었으나 해당 조사에서는 이에 상응하는 AKS 검증이 없었습니다. 이는 현재 목록 보장이나 지역 권장이 아닙니다.</p>
+<p>더 광범위한 카탈로그 조사는 아시아, 오세아니아, 아메리카, 유럽, 중동, 아프리카의 공개 지역 후보를 포함했습니다. 대부분은 AKS 적격 여부와 할당량을 개별적으로 확인하지 않았습니다. 단일 구독의 긴 목록을 제품 가용성 표처럼 만들지 말고 아래 반복 가능한 확인 절차를 자신의 지역에 사용하세요. 내부, 스테이징, 조기 액세스 지역 이름은 이 문서의 배포 후보가 아닙니다.</p>
+<ul>
+<li><code>restrictions: []</code>는 해당 쿼리가 제한을 반환하지 않았다는 뜻이지 용량이나 할당량이 있다는 뜻은 아닙니다.</li>
+<li>빈 결과는 해당 쿼리가 그 크기를 반환하지 않았다는 뜻입니다. 영구적인 전 세계 미지원 선언이 아닙니다.</li>
+<li><code>NotAvailableForSubscription</code>은 구독 제약이며 할당량만이 유일한 문제라는 증거는 아닙니다.</li>
+<li>영역 번호는 구독에 대한 논리 번호입니다. 영역 하나만 반환한 조합에 <code>--zones 1 2 3</code>을 그대로 복사하지 마세요.</li>
+</ul>
+<h3>익명화된 할당량 의사 결정 예시</h3>
+<table><thead><tr><th>패턴</th><th>예시</th><th>판단</th></tr></thead><tbody>
+<tr><td>AKS에 나열된 크기와 승인된 제품군 할당량</td><td>사용량 0, 제품군 한도 16 vCPU.</td><td>지역 할당량과 물리 용량이 충족된다면 4-vCPU 노드 3개와 서지 노드 1개에 충분한 제품군 여유 용량입니다.</td></tr>
+<tr><td>할당량 승인, AKS 결과에 크기 없음</td><td>원하는 AKS 크기가 반환되지 않았지만 제품군 16 vCPU가 승인됨.</td><td>SKU 접근/지원을 별도로 해결하세요. 승인이 AKS 목록을 무효화하지 않습니다.</td></tr>
+<tr><td>크기는 나열됨, 제품군 할당량은 0</td><td>증가 요청이 검토 대기 중.</td><td>지원 요청 제출은 승인이 아닙니다. 실제로 사용 가능한 한도를 기다리세요.</td></tr>
+<tr><td>다른 세대 또는 제품군의 할당량</td><td>v5 할당량은 남지만 배포 대상은 DCasv6 또는 DCadsv6.</td><td>정확한 제품군을 확인하세요. 한도는 세대나 디스크 변형 사이에 이전되지 않습니다.</td></tr>
+</tbody></table>
+<p>원본은 제품군 한도가 0일 때 음수 사용량 값도 확인했습니다. 음수, null, 누락, 실패한 사용량 응답은 알 수 없음으로 취급하세요. 0에서 음수 센티널 값을 빼서 가상의 용량을 계산하지 마세요. 승인 시간과 결과는 보장되지 않으며 승인 후에도 할당이 실패할 수 있습니다.</p>
+<h3>최대 노드 수와 서지를 위한 용량 계획</h3>
+<pre><code>3 steady-state nodes + 1 upgrade surge node
+  = (3 + 1) x 4 vCPUs
+  = 16 additional vCPUs
+
+Family target limit
+  &gt;= existing family usage
+     + (planned maximum nodes + surge nodes) x vCPUs per node
+
+Regional target limit
+  &gt;= existing regional usage
+     + additional deployment, scale-out, and upgrade vCPUs</code></pre>
+<p>자동 크기 조정에서는 초기 노드 수뿐 아니라 계획된 최대값을 사용하세요. 기존 할당을 이중 계산하지 않으면서 동시 업그레이드 풀과 기존/새 풀의 중첩을 포함하세요. AKS 노드는 동일한 구독과 지역의 다른 VM/VMSS 리소스와 경쟁합니다. 제품군 및 지역 여유 용량이 모두 충분해야 합니다. 사용하려는 제품군만 요청하세요.</p>
+
+<h2 id="discovery-commands">반복 가능한 검색 및 할당량 확인</h2>
+<p>다음은 Bash 예시이며 이 게시물을 위해 실행한 명령이 아닙니다. 자신의 값을 넣고 <code>az account show</code>로 구독을 확인하세요. 식별자를 게시하지 않도록 주의하세요. 원본 환경의 <code>az aks list-vm-skus</code> 명령은 이미 설치된 <code>aks-preview</code> 확장에서 제공되었습니다. 해당 명령의 확장 종속성은 CVM 기능의 출시 상태와 별개입니다. 확장이 설치되어 있다고 가정하지 말고 로컬 명령 도움말과 조직 정책을 확인하세요.</p>
+<pre><code class="language-bash">: "${LOCATION:?Set the target public Azure region}"
+SKU="Standard_DC4as_v6"
+
+az vm list-skus \
+  --location "$LOCATION" --resource-type virtualMachines \
+  --size "$SKU" --all \
+  --query "[?name=='$SKU'].{sku:name,family:family,locations:locations,locationInfo:locationInfo,restrictions:restrictions}" \
+  -o json
+
+az aks list-vm-skus \
+  --location "$LOCATION" --size "$SKU" --all \
+  --query "[?name=='$SKU'].{sku:name,family:family,locationInfo:locationInfo,restrictions:restrictions,capabilities:capabilities}" \
+  -o json</code></pre>
+<p><code>--all</code>은 제한된 결과도 포함하므로 제한 사항을 읽으세요. 기능 목록은 디스크와 유지 관리 필드 확인에 도움이 되지만 문서화된 AKS 지원보다 우선하지 않습니다. AKS 전용 명령이 없어도 Compute 결과와 문서는 유용하지만 직접 AKS SKU를 조회한 것과 같지는 않습니다.</p>
+<pre><code class="language-bash">SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+SCOPE="/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Compute/locations/$LOCATION"
+
+az quota list --scope "$SCOPE" \
+  --query "[].{name:name,label:properties.name.localizedValue,limit:properties.limit.value}" \
+  -o table
+
+# Confirm the exact family name from the list before using this example.
+FAMILY="standardDCasv6Family"
+az quota show --scope "$SCOPE" --resource-name "$FAMILY" \
+  --query "{name:name,limit:properties.limit.value}" -o json
+az quota usage show --scope "$SCOPE" --resource-name "$FAMILY" \
+  --query "{name:name,usage:properties.usages.value}" -o json
+az quota show --scope "$SCOPE" --resource-name cores \
+  --query "{name:name,limit:properties.limit.value}" -o json
+az quota usage show --scope "$SCOPE" --resource-name cores \
+  --query "{name:name,usage:properties.usages.value}" -o json</code></pre>
+<p>할당량 명령에는 사용 가능한 quota 확장이 필요합니다. 없다면 필요한 확장에 대한 승인을 받으세요. 공급자 등록이 필요하면 구독 관리자에게 <code>Microsoft.Quota</code> 처리를 요청하세요. 쿼리 실패를 사용량 0으로 취급하지 마세요.</p>
+<h3>필요한 경우에만 할당량 요청</h3>
+<ol>
+<li>Azure Portal의 Quotas를 열고 Compute를 선택한 뒤 원하는 구독과 지역으로 필터링하세요.</li>
+<li>정확한 VM 제품군을 선택하고 기존 사용량과 계획된 여유 용량을 포함한 원하는 <strong>최종 한도</strong>를 요청하세요.</li>
+<li>직접 조정이 불가능하거나 거부되면 지역, SKU, 요청 vCPU 한도, 사용 목적을 포함하여 지원 워크플로를 사용하세요.</li>
+<li>승인 후 제품군 및 총 지역 vCPU 한도와 사용량을 모두 다시 읽으세요. <a href="https://learn.microsoft.com/en-us/azure/quotas/per-vm-quota-requests">공식 할당량 절차</a>는 제품군 승인 시 지역 할당량도 자동으로 증가한다고 설명하지만 배포 전에 결과 여유 용량을 확인하세요.</li>
+</ol>
+<p><strong>다음 선택적 명령은 실제 할당량 변경 요청을 제출하며 읽기 전용 확인이 아닙니다.</strong> 현재 할당량이 이미 충분한 곳에서는 실행하지 마세요. 증가분이나 현재 한도보다 낮은 값이 아니라 계획으로 정당화되는 최종 한도를 설정하세요.</p>
+<pre><code class="language-bash">: "${TARGET_LIMIT:?Set the approved desired final vCPU limit}"
+az quota update --scope "$SCOPE" --resource-name "$FAMILY" \
+  --limit-object "value=$TARGET_LIMIT" --resource-type dedicated
+az quota request status list --scope "$SCOPE" -o table</code></pre>
+<p>할당량 승인만으로 예약이 되는 것은 아닙니다. <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/quotas">VM 할당량 안내</a>를 참조하고 할당 실패를 별도로 계획하세요.</p>
+
+<h2 id="deployment">Azure Linux 3 CVM User 풀 프로비저닝</h2>
+<blockquote><strong>실행한 Azure Linux 3 배포가 아닌 지침입니다.</strong> 아래 풀을 만들면 요금이 발생하는 리소스가 할당됩니다. 먼저 최신 OS/Kubernetes 지원, 정확한 SKU 제약, 제품군 및 지역 할당량, 허용된 영역을 확인하세요. 노드 풀은 클러스터와 같은 지역에 있어야 합니다. 다른 지역의 여유 용량을 사용하려면 그곳의 클러스터가 필요하며 지역 간 풀 연결은 할 수 없습니다.</blockquote>
+<h3>기존 클러스터 확인</h3>
+<pre><code class="language-bash">: "${RG:?Set the existing AKS resource group}"
+: "${AKS:?Set the existing AKS cluster name}"
+: "${POOL:?Set a valid new lowercase AKS pool name}"
+
+az aks show --resource-group "$RG" --name "$AKS" \
+  --query "{location:location,kubernetesVersion:kubernetesVersion,state:provisioningState}" \
+  -o json
+LOCATION=$(az aks show --resource-group "$RG" --name "$AKS" \
+  --query location -o tsv)</code></pre>
+<p>이 실제 <code>LOCATION</code>을 사용하여 앞의 검색과 할당량 확인을 반복하세요. 현재 지원되는 Kubernetes 버전과 Azure Linux 3 CVM 매핑을 확인하세요. FIPS, Trusted Launch, Pod Sandboxing 같은 비호환 기능과 풀을 조합하지 마세요.</p>
+<h3>확인을 통과한 후에만 생성</h3>
+<p>다음 조건부 예시는 원본의 3노드, 3영역 Managed 디스크 계획을 유지합니다. <strong>이 구독, 지역, 크기에서 세 영역 모두를 검증한 경우에만 영역 1, 2, 3을 사용하세요.</strong> 실행 전에 영역 인수를 검증된 집합으로 바꾸세요. 단일 영역의 노드 3개는 다중 영역 가용성을 제공하지 않습니다.</p>
+<pre><code class="language-bash">SKU="Standard_DC4as_v6"
+
+# MUTATING: creates a billable pool. Recheck zones and quota first.
+az aks nodepool add \
+  --resource-group "$RG" --cluster-name "$AKS" --name "$POOL" \
+  --mode User --node-count 3 --node-vm-size "$SKU" \
+  --os-type Linux --os-sku AzureLinux \
+  --node-osdisk-type Managed \
+  --zones 1 2 3 \
+  --max-surge 1</code></pre>
+<table><thead><tr><th>옵션</th><th>이유</th></tr></thead><tbody>
+<tr><td><code>--node-vm-size</code></td><td>지원되는 CVM 크기를 선택합니다. 일반 VM의 레이블로 하드웨어 보호를 활성화할 수는 없습니다.</td></tr>
+<tr><td><code>--os-sku AzureLinux</code></td><td>Azure Linux CVM 경로를 명시적으로 요청합니다. 생략하면 Ubuntu가 선택될 수 있습니다.</td></tr>
+<tr><td><code>--node-osdisk-type Managed</code></td><td>정확한 v6 임시 디스크 지원 불일치가 미해결인 동안 보수적인 영구 OS 디스크 기준선을 유지합니다.</td></tr>
+<tr><td><code>--max-surge 1</code></td><td>업그레이드 중 추가 노드 1개를 계획합니다. 이 예시에는 4 vCPU의 추가 여유 용량이 필요합니다.</td></tr>
+<tr><td><code>--mode User</code></td><td>CVM 보호 자체가 아닌 애플리케이션 풀 역할을 설정합니다.</td></tr>
+</tbody></table>
+<p>사용자 지정 전용 taint는 추가하지 않습니다. AKS는 지원되는 크기와 OS 조합에서 CVM 전용 이미지를 선택합니다. 독립형 VM용 <code>--security-type</code> 인수를 임의로 만들거나 최신 AKS CVM 가이드에서 요구하지 않는 미리 보기 기능 등록을 요구하지 마세요.</p>
+<p>원본의 과거 v5 대안은 동남아시아에서 <code>Standard_DC4as_v5</code>와 <code>--zones 1</code>만 사용했습니다. 이는 새 지원 및 할당량 확인 후 해당 지역의 클러스터에서 사용할 수 있는 조건부 대안입니다. 현재 할당 약속이나 다중 영역 HA 구성이 아닙니다.</p>
+<h3>구성과 기능 검증</h3>
+<pre><code class="language-bash">az aks nodepool show \
+  --resource-group "$RG" --cluster-name "$AKS" --name "$POOL" \
+  --query "{state:provisioningState,vmSize:vmSize,osSKU:osSKU,image:nodeImageVersion,count:count,zones:availabilityZones}" \
+  -o json
+
+# Use only an already-authorized context for the intended cluster.
+kubectl config current-context
+kubectl get nodes -l "kubernetes.azure.com/agentpool=$POOL" \
+  -L node.kubernetes.io/instance-type,topology.kubernetes.io/zone -o wide</code></pre>
+<p><code>Succeeded</code>, 원하는 CVM 크기, Azure Linux 3 CVM 이미지와 OS SKU, Ready 노드를 확인하세요. 필요한 경우 자격 증명을 얻으면 kubeconfig와 잠재적으로 활성 컨텍스트가 변경됩니다. 의도적으로 수행하세요. SKU/이미지 검사는 구성 근거이지 애플리케이션 수준 암호학적 증명이 아닙니다.</p>
+<h3>점진적 마이그레이션</h3>
+<ol>
+<li>CVM 풀을 구축하고 네트워킹, 스토리지, 추가 기능, 관찰 기능을 검증하세요.</li>
+<li>다른 필수 스케줄링 제약을 유지하면서 각 민감한 워크로드에 원하는 선택자를 병합하고 배포하세요.</li>
+<li>실제 Pod 배치, 서비스 동작, PV 접근, 처리량, 지연 시간, 로그를 검증하세요.</li>
+<li>적절한 복제본, 중단 예산, 스토리지 영역 호환성을 갖추고 워크로드를 점진적으로 옮기세요.</li>
+<li>기존 풀을 폐기하기 전에 롤백 경로를 유지하세요. 새 노드가 Ready라고 보고했다는 이유만으로 삭제하거나 드레인하지 마세요.</li>
+</ol>
+
+<h2 id="upgrade-evidence">Ubuntu 24.04 업그레이드가 실제로 입증한 것</h2>
+<p><strong>이는 별도의 과거 실험 관찰이며 Azure Linux 3 업그레이드 측정이 아닙니다.</strong> 2026년 9월 17일 원본은 다음 구성과 결과를 기록했습니다. 리소스 ID와 원시 로그는 의도적으로 게시하지 않습니다.</p>
+<table><thead><tr><th>항목</th><th>기록된 사실</th></tr></thead><tbody>
+<tr><td>초기 Kubernetes 버전</td><td>1.35.7</td></tr>
+<tr><td>일반 System 풀</td><td>노드 1개, <code>Standard_D4as_v5</code></td></tr>
+<tr><td>CVM User 풀</td><td>노드 2개, <code>Standard_DC4as_v6</code></td></tr>
+<tr><td>OS 및 디스크</td><td>두 풀 모두 Ubuntu 24.04와 Managed OS Disk</td></tr>
+<tr><td>기록된 CVM 이미지</td><td><code>AKSUbuntu-2404gen2CVMcontainerd-202609.03.1</code></td></tr>
+<tr><td>샘플</td><td>각각 복제본 1개인 Deployment 3개를 CVM 풀에 스케줄링. 초기 Ready 상태이며 종료 유예 기간은 30초로 구성</td></tr>
+<tr><td>업그레이드 대상과 결과</td><td>Kubernetes 1.36.3. 컨트롤 플레인과 두 풀 모두 <code>Succeeded</code> 보고</td></tr>
+<tr><td>최종 노드</td><td>노드 3개 모두 Ready 및 v1.36.3</td></tr>
+<tr><td>교체된 샘플 Pod</td><td>3개 모두 CVM 풀에서 Ready. 보고된 컨테이너 재시작 횟수는 0</td></tr>
+</tbody></table>
+<blockquote><strong>입증되지 않은 것:</strong> 실제 종료 소요 시간, 의도한 20초 정리 완료, 구성된 30초 유예 기간 준수, 컨테이너 종료 코드, SIGKILL 발생 여부, 요청 손실, 지연 시간, 무중단. 원본에는 충분한 종료 타임스탬프 및 종료 근거가 없었습니다. 업그레이드 성공과 교체 Pod의 Ready 상태는 그 공백을 채우지 못합니다.</blockquote>
+<p><em>교체된</em> Pod의 재시작 횟수가 0이라는 사실은 원래 Pod가 종료되지 않았다는 뜻도, 서비스가 중단되지 않았다는 증거도 아닙니다. Deployment 3개는 독립된 단일 복제본 애플리케이션이며 하나의 고가용성 서비스의 복제본 3개가 아닙니다. System 풀 노드 수는 실험 사실이지 최신 프로덕션 지침이 아닙니다.</p>
+
+<h2 id="shutdown-sample">사용 전에 샘플 읽기</h2>
+<p><a href="../downloads/aks-confidential-vm/cvm-graceful-test.yaml" download>실험 전용 종료 관찰 매니페스트 다운로드</a>. Namespace 1개, Python 프로그램이 포함된 ConfigMap 1개, 단일 복제본 Deployment 3개가 들어 있습니다. 사용 전에 <code>REPLACE_WITH_CVM_POOL</code> 선택자 3개를 모두 바꾸세요. 클러스터 컨텍스트를 확인하고 워크로드 소유자의 승인을 받으세요. 적용하면 리소스가 생성되며 요금이 발생하는 용량을 소비할 수 있습니다.</p>
+<p>다운로드는 원본의 애플리케이션 동작, <code>python:3.12-slim</code> 이미지 참조, 프로브, 리소스 설정, 보안 컨텍스트를 보존합니다. 풀 선택자와 영어 안전 안내만 변경했습니다. 이 이미지는 다이제스트가 아닌 태그로 고정되어 있으므로 향후 가져오기에서 동일한 바이트를 보장하지 않습니다. Service, PodDisruptionBudget, preStop 훅, 트래픽 생성기, CI 배포, 가용성 메커니즘을 추가하지 않았습니다.</p>
+<h3>관찰된 시간 결과가 아닌 의도한 동작</h3>
+<table><thead><tr><th>설정 또는 코드 경로</th><th>실제 의미</th></tr></thead><tbody>
+<tr><td>Python이 PID 1로 직접 실행됨</td><td>매니페스트는 셸 래퍼 대신 직접 Python 명령을 사용합니다. 프로그램은 SIGTERM 및 SIGINT 처리기를 등록합니다.</td></tr>
+<tr><td><code>shutdown_started</code></td><td>처음 처리하는 신호에서 UTC 시각, 런타임 Pod/노드 이름, 신호, 구성된 시간 상수를 기록합니다. 단조 증가 경과 시간 타이머를 시작하고 중지 중 상태로 표시합니다.</td></tr>
+<tr><td>HTTP 준비 상태</td><td>HTTP 처리기는 중지 전에는 200, 이후에는 503을 반환합니다. 구성된 <code>/ready</code> 프로브를 포함한 모든 GET 경로에서 이렇게 동작합니다.</td></tr>
+<tr><td>프로브 설정</td><td>준비 상태를 2초마다 확인하며 실패 임계값은 1입니다. 이는 구성값이지 모든 트래픽 제거 지연의 측정된 상한이 아닙니다.</td></tr>
+<tr><td><code>time.sleep(20)</code></td><td>정리를 모의합니다. 실제 업무를 처리하거나 저장하지 않으며 요청 드레인을 측정하지 않습니다.</td></tr>
+<tr><td>서버 종료 및 완료</td><td>sleep 후 HTTP 서비스 루프를 멈추고 서버를 닫고 작업 스레드를 합류시킨 뒤 <code>shutdown_completed</code>를 기록합니다. 여기에는 반올림한 단조 증가 경과 초와 리터럴 <code>exit_code=0</code>이 포함됩니다.</td></tr>
+<tr><td><code>terminationGracePeriodSeconds: 30</code></td><td>구성된 정상 Pod 종료 시간 예산입니다. 필수 30초 지연도 Azure 유지 관리 연장도 아닙니다.</td></tr>
+</tbody></table>
+<p>리터럴 <code>exit_code=0</code> 로그 필드를 독립적인 런타임 종료 상태 근거와 동일시하지 마세요. 정상 프로그램 경로에서는 로깅 후 Python이 성공적으로 종료되지만 컨테이너의 실제 종료 상태는 여전히 별도로 수집해야 합니다. 전체 완료 시간에는 신호 처리, 스케줄링, 20초 sleep, HTTP 서버의 종료 폴링, close/join 작업, 로깅이 포함됩니다. 구조상 정확히 20초인 것은 아니며 심하게 지연된 프로세스는 명목상 시간 예산을 초과할 수 있습니다.</p>
+<p>샘플의 HTTP 서버는 모의 정리 구간에도 GET 요청을 수락하고 503을 반환할 수 있습니다. 프로덕션 연결 드레인 구현이 아닙니다. Python의 <a href="https://docs.python.org/3.12/library/socketserver.html">서버 종료 규약</a>도 서비스 루프 중단과 요청/스레드 처리를 구분합니다. 원본 샘플은 HA 또는 트랜잭션 정확성 테스트가 아니라 작은 신호 처리 관찰 보조 도구로 유지해야 합니다.</p>
+<h3>Kubernetes 종료 시간 예산 이해</h3>
+<p>정상 <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination">Pod 종료 흐름</a>에서 kubelet은 로컬 종료를 시작하고 컨테이너 런타임은 일반적으로 PID 1에 신호를 보냅니다. 구성된 preStop 훅은 중지 신호 전에 동일한 유예 시간 예산을 사용하며 독립된 30초가 추가로 주어지지 않습니다. 이 샘플에는 그런 훅이 없습니다. 유예 기간이 끝나면 남은 프로세스가 강제로 종료될 수 있습니다. Kubernetes는 실행 중인 preStop 훅에 대한 짧은 일회성 연장, 종료 처리 재시작 등의 예외 상황을 문서화합니다. 30초를 모든 실패 모드에 적용되는 보편적인 실제 경과 시간 타이머로 취급하지 마세요.</p>
+<p>준비 상태와 엔드포인트 전파는 별도 제어 루프를 통해 진행됩니다. 샘플에는 Service나 트래픽 테스트가 없으므로 종단 간 트래픽 제거 또는 요청 손실에 대한 근거가 없습니다. 단일 복제본 PDB를 추가하면 의도한 드레인을 막고 실험을 바꿀 수 있으므로 의도적으로 추가하지 않았습니다.</p>
+<h3>별도로 승인된 실험에서 누락된 근거 수집</h3>
+<ol>
+<li>계획된 테스트 전에 선택자 3개, 초기 Pod ID, 이미지 ID, Ready 상태, 30초 유예 설정을 모두 확인하세요.</li>
+<li>독립된 영구 로그 대상 또는 API 연결이 끊어지면 다시 연결하는 관찰 도구를 사용하세요. 노드 로컬 로그는 재이미징 중 사라질 수 있고 삭제된 Pod 로그는 kubectl로 더 이상 조회하지 못할 수 있습니다.</li>
+<li>원래 각 Pod의 <code>shutdown_started</code> 및 <code>shutdown_completed</code> 타임스탬프와 elapsed 필드를 컨테이너 런타임 종료 이유 및 종료 코드와 연계하세요.</li>
+<li>교체 Pod의 ID, 배치, 준비 상태, 재시작 횟수를 별도로 추적하세요. 서비스 연속성을 평가한다면 이 매니페스트가 제공한다고 가정하지 말고 적절한 트래픽 및 가용성 테스트를 설계하세요.</li>
+<li>수집한 로그를 공유하기 전에 런타임 Pod/노드 이름과 인프라 세부 정보를 가리세요. 이후 별도로 수행한 Pod 삭제 실험은 추가 근거이지 누락된 업그레이드 근거의 복원이 아닙니다.</li>
+</ol>
+
+<h2 id="adoption-checklist">적절한 위협 모델을 위해 CVM 채택</h2>
+<p>요구 사항에 클라우드 호스트 접근으로부터 사용 중인 데이터를 보호하는 것이 포함된다면 CVM은 가치가 있습니다. 당장의 목표가 일반적인 웹 애플리케이션 보안이라면 ID, 패치, 비밀 관리, 네트워크 제어가 더 우선일 수 있습니다. 기밀 컴퓨팅을 대체 수단이 아니라 추가 계층으로 취급하세요.</p>
+<ul>
+<li>VM 수준 신뢰 경계를 정의하고 수신, 스토리지, 원격 분석을 포함한 모든 민감한 데이터 경로를 파악하세요.</li>
+<li>지원되는 CVM 크기와 OS 이미지를 사용하고 Azure Linux 3 지침과 Ubuntu 기반 측정을 구분하세요.</li>
+<li>적절하다면 일반 System 풀과 CVM User 풀로 시작한 뒤 실제 추가 기능과 워크로드 배치를 검증하세요. 선택자는 풀을 독점 예약하지 않습니다.</li>
+<li>스케일 아웃 및 서지 여유 용량을 포함하여 SKU 표시, AKS 적격 여부, 할당량, 영역, 용량을 독립적으로 검증하세요.</li>
+<li>v6 유지 관리와 DCasv6 임시 디스크 기능에 의존하기 전에 정확한 구성에 대한 근거 충돌을 해결하세요.</li>
+<li>전체 서비스 동작과 총비용을 벤치마크하세요. 가정한 라이브 마이그레이션이나 약속된 종료 시간 대신 재시작과 중단된 정리를 고려하여 설계하세요.</li>
+<li>샘플은 실험 전용 관찰 보조 도구로 사용하세요. 업그레이드 성공 결과를 정상 종료, 무중단, HA 보장으로 확대하지 마세요.</li>
+</ul>

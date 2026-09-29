@@ -63,12 +63,20 @@ button { padding: 8px 16px; }
 button:hover { border-color: var(--cp-accent); }
 .skip { position: fixed; top: -80px; left: 16px; z-index: 10; padding: 12px 20px; background: var(--cp-surface); }
 .skip:focus { top: 12px; }
-.site-header { min-height: 88px; padding: 16px max(24px, calc((100vw - 1280px) / 2)); display: flex; align-items: center; justify-content: space-between; gap: 24px; background: var(--cp-bg-elevated); border-bottom: 1px solid var(--cp-border); }
+.site-header { position: sticky; top: 0; z-index: 5; min-height: 88px; padding: 16px max(24px, calc((100vw - 1280px) / 2)); display: flex; align-items: center; justify-content: space-between; gap: 24px; background: var(--cp-bg-elevated); border-bottom: 1px solid var(--cp-border); }
 .brand { display: flex; gap: 12px; align-items: center; text-decoration: none; color: var(--cp-text); font-weight: 650; font-size: 20px; line-height: 1.3; }
 .brand-mark { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 0.625rem; background: var(--cp-accent); color: var(--cp-accent-fg); font-size: 16px; letter-spacing: -1px; }
 .brand-subtitle { display: block; font-size: 10px; letter-spacing: 2px; color: var(--cp-text-muted); margin-top: 3px; }
 .site-header nav { display: flex; gap: 24px; align-items: center; font-size: 14px; }
 .site-header nav a { color: var(--cp-text); text-decoration: none; }
+.language-switch { display: flex; align-items: center; gap: 4px; border: 1px solid var(--cp-border); border-radius: 0.625rem; padding: 4px; background: var(--cp-surface); }
+.site-header nav .language-link { padding: 4px 8px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
+.site-header nav .language-link[aria-current="page"] { color: var(--cp-accent-fg); background: var(--cp-accent); }
+.translation-note { margin: -8px 0 28px; font-size: 12px; color: var(--cp-text-soft); line-height: 1.8; }
+html[lang="ko"] body { font-family: "Segoe UI", Aptos, Calibri, "Malgun Gothic", -apple-system, BlinkMacSystemFont, sans-serif; word-break: keep-all; overflow-wrap: anywhere; }
+html[lang="ko"] h1, html[lang="ko"] h2, html[lang="ko"] h3 { letter-spacing: -0.025em; line-height: 1.45; }
+html[lang="ko"] .eyebrow { letter-spacing: 0.8px; }
+html[lang="ko"] pre, html[lang="ko"] pre code { word-break: normal; overflow-wrap: normal; }
 .home { max-width: 1280px; margin: 0 auto; padding: 0 24px; }
 .hero { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 64px; align-items: center; padding: 80px 0 64px; }
 .eyebrow { display: block; color: var(--cp-accent); letter-spacing: 1.7px; font-size: 11px; font-weight: 700; text-transform: uppercase; margin: 0 0 16px; }
@@ -108,7 +116,7 @@ input[type="search"] { display: block; width: 100%; padding: 12px 16px; margin-t
 .about-grid p { font-size: 14px; color: var(--cp-text-muted); max-width: 500px; }
 footer { border-top: 1px solid var(--cp-border); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; padding: 28px max(24px, calc((100vw - 1280px) / 2)); font-size: 11px; color: var(--cp-text-soft); }
 .topic-layout { display: grid; grid-template-columns: 248px minmax(0, 900px); gap: 64px; max-width: 1280px; margin: 0 auto; padding: 56px 24px 80px; align-items: start; }
-.toc { position: sticky; top: 24px; max-height: calc(100vh - 48px); overflow-y: auto; font-size: 12px; padding-right: 16px; }
+.toc { position: sticky; top: 112px; max-height: calc(100vh - 136px); overflow-y: auto; font-size: 12px; padding-right: 16px; }
 .toc summary { font-size: 13px; font-weight: 650; cursor: pointer; }
 .toc ol { list-style: none; padding: 0; margin: 16px 0 24px; border-left: 1px solid var(--cp-border); }
 .toc li { padding: 6px 0 6px 16px; line-height: 1.6; }
@@ -183,7 +191,10 @@ pre { padding: 24px; margin: 24px 0; border: 1px solid var(--cp-border); border-
   .hero { gap: 32px; grid-template-columns: minmax(0, 1fr) 220px; }
 }
 @media (max-width: 720px) {
+  html { scroll-padding-top: 160px; }
   .site-header { padding: 16px 20px; gap: 12px; }
+  .site-header { flex-wrap: wrap; }
+  .site-header nav { flex-wrap: wrap; }
   .site-header nav { gap: 12px; font-size: 12px; }
   .site-header nav button { padding: 8px; font-size: 11px; }
   .brand { font-size: 17px; gap: 8px; }

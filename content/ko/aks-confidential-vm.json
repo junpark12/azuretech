@@ -1,0 +1,30 @@
+{
+  "slug": "aks-confidential-vm",
+  "category": "AKS",
+  "title": "AKS 기밀 VM: Azure Linux 3 배포와 과장 없는 업그레이드 근거",
+  "summary": "노드 수준 신뢰 경계, 배치, 비용, SKU 및 할당량 확인, 스토리지와 유지 관리 제약, 그리고 민감 정보를 제거한 종료 테스트 매니페스트를 사용하는 Ubuntu 24.04 CVM 업그레이드 관찰을 살펴봅니다.",
+  "bodyFile": "aks-confidential-vm.html",
+  "sourceDocuments": [
+    "AKS Azure Linux 3 기밀 VM: 이점, 고려 사항, 지역 및 배포 가이드",
+    "기밀 VM 정상 종료 관찰 샘플"
+  ],
+  "downloads": [
+    {
+      "path": "downloads/aks-confidential-vm/cvm-graceful-test.yaml",
+      "label": "CVM 종료 관찰 YAML 다운로드",
+      "description": "실험 전용 Namespace, Python ConfigMap, 단일 복제본 Deployment 3개입니다. 사용 전에 모든 REPLACE_WITH_CVM_POOL 선택자를 바꾸세요. Service, PDB, preStop 훅, 고가용성 보장은 없습니다."
+    }
+  ],
+  "omissions": [
+    "비공개 저장소 링크, 원본 스크린샷, 원시 관찰 로그, kubeconfig, 구독 및 테넌트 식별자, 리소스 식별자, 고객 이름, 호스트 이름, IP 주소, 개인 경로, 연락처는 게시하지 않습니다.",
+    "구독별 할당량 목록, 할당량 요청 결과, 지원 사례 세부 정보와 지원 상태는 현재 계정 기록 대신 익명화된 의사 결정 예시로 대체했습니다.",
+    "내부, 조기 액세스, 스테이징 지역 이름은 배포 후보로 게시하지 않습니다.",
+    "종료 소요 시간, 종료 코드, SIGKILL, 요청 손실, 지연 시간, 가격, 가용성 측정값은 만들어 내지 않았습니다. 원본은 이를 입증하지 않았습니다.",
+    "샘플은 이미지와 애플리케이션 동작을 유지하며 풀 선택자와 영어 안전 안내만 다릅니다. Service, PDB, preStop 훅, 트래픽 생성기, 프로덕션 스케줄링 변경, 권한 있는 테스트는 추가하지 않았습니다.",
+    "기록된 업그레이드는 Azure Linux 3가 아닌 Ubuntu 24.04를 사용했습니다. Azure Linux 3 프로비저닝과 Ephemeral OS Disk 대안은 지침이며 새로 실행한 검증이 아닙니다.",
+    "현재 공개된 DCasv6 Ephemeral OS Disk 지원 정보는 원본의 AKS 기능 응답과 충돌합니다. 이 문서는 보편적인 지원 또는 미지원을 선언하지 않고 미해결 불일치를 드러냅니다. v6 메모리 보존 유지 관리의 불일치 역시 미해결 상태입니다.",
+    "단일 구독의 광범위한 지역 목록은 현재 가용성 표로 다시 게시하지 않고 날짜가 명시된 공개 지역 예시와 반복 가능한 검색 절차로 압축했습니다."
+  ],
+  "sourceJsonSha256": "94a5dd19bd5d06b7c70f5b8bd8c3623962485c66f588a9f03636d153f4616581",
+  "sourceBodySha256": "99cce5de7cab791e07fb3c98fb6c58cea86bb8d3b939d05d5ab089c388b4a4ec"
+}

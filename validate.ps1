@@ -2,10 +2,16 @@ $ErrorActionPreference = 'Stop'
 $root = Join-Path $PSScriptRoot 'docs'
 $manifest = Get-Content (Join-Path $root 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $portal = Get-Content (Join-Path $PSScriptRoot 'portal-screenshots.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'localization.ps1')
+$visuals=Get-Content (Join-Path $PSScriptRoot 'visuals.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$portalScreenshots=$portal
+Read-KoreanVisualText
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Web.Extensions
 $jsonParser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
 if ($manifest.topicCount -ne 13) { throw 'The public edition must contain exactly 13 topics.' }
+Assert-SameSequence @('en','ko') @($manifest.languages) 'published languages'
+if ($manifest.pageCount -ne 28) { throw 'Expected 28 bilingual pages.' }
 if (@($manifest.topics | Where-Object { $_.slug -eq 'aks-confidential-vm' -and $_.category -eq 'AKS' }).Count -ne 1) { throw 'The AKS CVM topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.slug -eq 'content-safety-streaming' -and $_.category -eq 'AI' }).Count -ne 1) { throw 'The Content Safety streaming topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.slug -eq 'self-hosted-aca' -and $_.category -eq 'GitHub' }).Count -ne 1) { throw 'The GitHub ACA runner topic is missing or duplicated.' }
@@ -13,11 +19,10 @@ if (@($manifest.topics | Where-Object { $_.category -eq 'App Modernization' }).C
 $files = @(Get-ChildItem $root -File -Recurse -Force)
 $problems = New-Object 'System.Collections.Generic.List[string]'
 $htmlFiles = @($files | Where-Object { $_.Extension -eq '.html' })
-if ($htmlFiles.Count -ne 14) { $problems.Add("Expected 14 HTML files, found $($htmlFiles.Count).") }
+if ($htmlFiles.Count -ne 28) { $problems.Add("Expected 28 HTML files, found $($htmlFiles.Count).") }
 $guidPattern = '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'
 $publicRoleIds = @('5e0bd9bd-7b93-4f28-af87-19fc36ad61bd') # Cognitive Services OpenAI User.
 $checks = @{
-    'Non-English Korean text' = '[\uAC00-\uD7AF]'
     'Private source repository reference' = '(?i)vKB-|AppModernization'
     'Private key material' = '-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'
     'Credential-like token' = '(?i)\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{24,})\b'
@@ -70,7 +75,25 @@ foreach ($file in $files) {
 }
 foreach ($file in $htmlFiles) {
     $html = Get-Content $file.FullName -Raw -Encoding UTF8
-    if ($html -notmatch '<html lang="en">' -or $html -notmatch '<meta charset="utf-8">') { $problems.Add("$($file.Name): missing language/encoding.") }
+    $relativePage=$file.FullName.Substring($root.Length+1).Replace('\','/')
+    $locale=if($relativePage.StartsWith('ko/')){'ko'}else{'en'}
+    if ($html -notmatch ('<html lang="'+$locale+'">') -or $html -notmatch '<meta charset="utf-8">') { $problems.Add("$relativePage : incorrect language/encoding.") }
+    $counterpart=if($locale -eq 'ko'){$relativePage.Substring(3)}else{'ko/'+$relativePage}
+    if(-not(Test-Path (Join-Path $root $counterpart.Replace('/','\')))){ $problems.Add("Missing language counterpart: $relativePage") }
+    $switches=[regex]::Matches($html,'<a class="language-link" href="([^"]+)" hreflang="(en|ko)" lang="(en|ko)"([^>]*)>')
+    if($switches.Count -ne 2){$problems.Add("Missing language switch: $relativePage")}
+    foreach($link in $switches){
+        $language=$link.Groups[2].Value
+        $href=[System.Net.WebUtility]::HtmlDecode($link.Groups[1].Value)
+        $destination=[System.IO.Path]::GetFullPath((Join-Path $file.DirectoryName $href.Replace('/','\')))
+        $want=if($language -eq $locale){$file.FullName}else{Join-Path $root $counterpart.Replace('/','\')}
+        if($destination -ne $want){$problems.Add("Language switch does not map same article: $relativePage / $language")}
+        if(($language -eq $locale) -ne ($link.Groups[4].Value -match 'aria-current="page"')){$problems.Add("Incorrect current language: $relativePage")}
+    }
+    foreach($language in @('en','ko','x-default')){
+        if($html -notmatch ('<link rel="alternate" hreflang="'+$language+'" href="https://junpark12.github.io/azuretech/')){$problems.Add("Missing alternate language: $relativePage / $language")}
+    }
+    if($locale -eq 'ko' -and $html -notmatch '[\uAC00-\uD7AF]'){$problems.Add("Korean page is not translated: $relativePage")}
     $ids = @([regex]::Matches($html, '<[a-zA-Z][^<>]*\sid="([^"]+)"[^<>]*>') | ForEach-Object { $_.Groups[1].Value })
     if (@($ids | Select-Object -Unique).Count -ne $ids.Count) { $problems.Add("$($file.Name): duplicate IDs.") }
     $expectedImages = @($portal.images | Where-Object { $_.topic -eq $file.BaseName })
@@ -105,6 +128,22 @@ foreach ($file in $htmlFiles) {
         }
     }
 }
+foreach($metadata in Get-ChildItem (Join-Path $PSScriptRoot 'content') -Filter '*.json'){
+    $english=Get-Content $metadata.FullName -Raw -Encoding UTF8|ConvertFrom-Json
+    if($english.bodyFile){$english|Add-Member -NotePropertyName bodyHtml -NotePropertyValue (Get-Content (Resolve-Within $metadata.DirectoryName $english.bodyFile) -Raw -Encoding UTF8) -Force}
+    $korean=Read-KoreanArticle $english
+    if($english.bodyHtml -match '[\uAC00-\uD7AF]'){$problems.Add("Korean text leaked into English source: $($english.slug)")}
+    foreach($language in @('en','ko')){
+        $relative=if($language -eq 'ko'){"ko/topics/$($english.slug).html"}else{"topics/$($english.slug).html"}
+        $pageText=Get-Content (Join-Path $root $relative.Replace('/','\')) -Raw -Encoding UTF8
+        $expectedBody=if($language -eq 'ko'){$korean.bodyHtml}else{$english.bodyHtml}
+        $expectedPre=@([regex]::Matches($expectedBody,'<pre\b[^>]*>.*?</pre>','Singleline')|ForEach-Object{$_.Value.Replace("`r`n","`n")})
+        $renderedPre=@([regex]::Matches($pageText,'<pre\b[^>]*>.*?</pre>','Singleline')|ForEach-Object{$_.Value.Replace("`r`n","`n")})
+        Assert-SameSequence $expectedPre $renderedPre "$relative rendered examples"
+    }
+}
+if(Test-Path (Join-Path $root 'ko\downloads')){$problems.Add('Korean locale must use shared downloads, not duplicated files.')}
+if(Test-Path (Join-Path $root 'ko\assets')){$problems.Add('Korean locale must use shared assets, not duplicated files.')}
 $visualData = Get-Content (Join-Path $PSScriptRoot 'visuals.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $translation = Get-Content (Join-Path $PSScriptRoot 'content\translation-performance.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 foreach ($row in $visualData.'translation-performance'.chart.rows) {
@@ -121,7 +160,15 @@ foreach ($row in $visualData.'ase-frontend-scaling'.chart.rows) {
     if ($normalized -notmatch $sourcePattern) { $problems.Add("ASE chart value not found in source table: $($row.label)") }
 }
 foreach ($resource in $manifest.resources) {
-    if (-not (Test-Path -LiteralPath (Join-Path $root $resource.Replace('/', '\')) -PathType Leaf)) { $problems.Add("Manifest resource missing: $resource") }
+    $publishedPath = Resolve-Within $root $resource
+    $sourcePath = Resolve-Within $PSScriptRoot $resource
+    if (-not (Test-Path -LiteralPath $publishedPath -PathType Leaf)) { $problems.Add("Manifest resource missing: $resource") }
+    elseif ((Get-FileHash -LiteralPath $publishedPath).Hash -ne (Get-FileHash -LiteralPath $sourcePath).Hash) { $problems.Add("Shared download differs from source: $resource") }
+}
+foreach ($asset in @('assets/site.css','assets/site.js')) {
+    if ((Get-FileHash -LiteralPath (Resolve-Within $root $asset)).Hash -ne (Get-FileHash -LiteralPath (Resolve-Within $PSScriptRoot $asset)).Hash) {
+        $problems.Add("Shared asset is stale: $asset")
+    }
 }
 if (@($manifest.portalScreenshots).Count -ne @($portal.images).Count) { $problems.Add('Screenshot manifest count mismatch.') }
 foreach ($image in $portal.images) {
@@ -130,4 +177,22 @@ foreach ($image in $portal.images) {
     }
 }
 if ($problems.Count) { throw ($problems -join "`n") }
-Write-Output "Validated $($manifest.topicCount) topic pages, index, $($manifest.resources.Count) resources, local links, anchors, JSON/XML, language, and publication patterns."
+function Assert-ValidationRejects([scriptblock]$action, [string]$expected) {
+    try { & $action }
+    catch {
+        if ($_.Exception.Message -notlike "*$expected*") { throw }
+        return
+    }
+    throw "Regression: validation accepted invalid input ($expected)."
+}
+$changedUi = $uiLocales | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+$changedUi.en.homeTitle += ' changed'
+Assert-ValidationRejects { Assert-UiTranslation $changedUi } 'fingerprint: UI text'
+Assert-ValidationRejects { Assert-SourceHash (Join-Path $PSScriptRoot 'content\translation-performance.json') ('0' * 64) 'regression source' } 'fingerprint: regression source'
+Assert-ValidationRejects { Read-KoreanArticle ([pscustomobject]@{slug='missing-regression-fixture'}) } 'Missing Korean article'
+$changedMeasurement = Read-KoreanArticle $translation
+$cell = [regex]::Match($changedMeasurement.bodyHtml, '<td>(\d[\d,.]*)</td>')
+if (-not $cell.Success) { throw 'Measurement regression fixture is missing.' }
+$changedMeasurement.bodyHtml = $changedMeasurement.bodyHtml.Remove($cell.Groups[1].Index, $cell.Groups[1].Length).Insert($cell.Groups[1].Index, '999999999')
+Assert-ValidationRejects { Assert-ArticleParity $translation $changedMeasurement } 'measurement cell'
+Write-Output "Validated $($manifest.topicCount) bilingual topics, 28 pages, $($manifest.resources.Count) shared resources, locale links, source/UI fingerprints, code/measurement parity, rejection regressions, and publication safeguards."

@@ -1,0 +1,16 @@
+{
+  "slug": "acr-streaming",
+  "category": "AKS",
+  "title": "AKS Artifact Streaming: 구성, 벤치마크, 롤백",
+  "summary": "지원되는 Linux 노드 풀에서 ACR Artifact Streaming을 활성화하고 캐시 편향 없이 콜드 스타트 개선 효과를 측정합니다.",
+  "bodyFile": "acr-streaming.html",
+  "sourceDocuments": ["AKS Artifact Streaming(Linux) 배포 가이드"],
+  "downloads": [],
+  "omissions": [
+    "비공개 환경 식별자는 입력 변수로 대체했습니다. 원래 환경 값이나 비공개 원본 링크는 게시하지 않습니다.",
+    "저장소 루트의 README는 색인일 뿐이며 추가 기술 절차를 제공하지 않습니다.",
+    "이 원본 폴더에는 독립된 YAML 리소스가 없으므로 다운로드를 임의로 만들지 않았습니다."
+  ],
+  "sourceJsonSha256": "32ffa969abee278992f9d1fa8bf4dbeda0fd69707baad86a3656659dda4d1b97",
+  "sourceBodySha256": null
+}

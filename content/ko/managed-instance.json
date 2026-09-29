@@ -1,0 +1,19 @@
+{
+  "slug": "managed-instance",
+  "category": "App Service",
+  "title": "App Service의 Managed Instance: 기능과 PoC",
+  "summary": "요금제 범위 Windows 사용자 지정, 앱 범위 프라이빗 엔드포인트, Bastion 진단 및 미리 보기 PoC에서 관찰한 제한 사항을 살펴봅니다.",
+  "bodyFile": "managed-instance.html",
+  "sourceDocuments": [
+    "App Service Managed Instance: 관리 기능별 장점",
+    "App Service의 Managed Instance(미리 보기): PoC 설정과 검증"
+  ],
+  "downloads": [],
+  "omissions": [
+    "실제 리소스 이름, 구독 컨텍스트, 네트워크 주소 및 공용 IP는 변수로 대체했습니다.",
+    "저장소에는 이 주제에 대한 보조 scripts.zip, 설치 스크립트, 배포 템플릿 또는 완전한 정리 스크립트가 없습니다.",
+    "원본 정리 절은 문장 중간에서 끝나며 누락된 명령을 원문에서 제공한 것처럼 제시하지 않았습니다."
+  ],
+  "sourceJsonSha256": "18f66b18f25303b7f5ff442b47c7a55481e844d30e497f8cffe249c39748e1cd",
+  "sourceBodySha256": "26b790badf5877310568e8c3a10f5fe267a8587d7ddf012d6cb8c1f80bfe3989"
+}

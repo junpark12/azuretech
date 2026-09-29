@@ -14,9 +14,10 @@ function Svg-Icon([string]$kind) {
     if (-not $shapes.ContainsKey($kind)) { throw "Unknown diagram icon: $kind" }
     '<g class="diagram-icon">' + $shapes[$kind] + '</g>'
 }
-function Topic-Diagram([string]$slug, [switch]$Thumbnail) {
+function Topic-Diagram([string]$slug, [switch]$Thumbnail, [string]$Locale = 'en') {
     $v = $visuals.$slug
     if (-not $v -or @($v.nodes).Count -lt 3) { throw "Missing diagram definition: $slug" }
+    $copy = if ($Locale -eq 'ko') { $koVisualText.topics.$slug } else { $v }
     $marker = 'arrow-' + $slug + $(if ($Thumbnail) { '-card' } else { '-article' })
     $edges = foreach ($e in $v.edges) {
         $dash = if ($e.dashed) { ' diagram-dashed' } else { '' }
@@ -26,7 +27,7 @@ function Topic-Diagram([string]$slug, [switch]$Thumbnail) {
         $accent = if ($n.accent) { ' diagram-accent' } else { '' }
         '<g class="diagram-node' + $accent + '" transform="translate(' + $n.x + ' ' + $n.y + ')"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)">' + (Svg-Icon $n.icon) + '</g><text class="diagram-node-title" x="12" y="47">' + (Encode $n.title) + '</text><text class="diagram-node-detail" x="12" y="65">' + (Encode $n.detail) + '</text></g>'
     }
-    $access = if ($Thumbnail) { 'aria-hidden="true" focusable="false"' } else { 'role="img" aria-label="' + (Encode ($v.title + '. ' + $v.caption)) + '"' }
+    $access = if ($Thumbnail) { 'aria-hidden="true" focusable="false"' } else { 'role="img" aria-label="' + (Encode ($copy.title + '. ' + $copy.caption)) + '"' }
     $boundary = ''
     if ($v.boundary) {
         $b = $v.boundary
@@ -34,11 +35,12 @@ function Topic-Diagram([string]$slug, [switch]$Thumbnail) {
     }
     $svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 344" ' + $access + '><defs><marker id="' + $marker + '" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="diagram-arrow" d="M0 0L8 4L0 8z"/></marker></defs><path class="diagram-guide" d="M24 32H696M24 324H696"/><text class="diagram-kicker" x="24" y="23">SYSTEM VIEW / ' + (Encode $slug.ToUpperInvariant().Replace('-', ' ')) + '</text>' + $boundary + ($edges -join '') + ($nodes -join '') + '</svg>'
     if ($Thumbnail) { return '<div class="topic-illustration">' + $svg + '</div>' }
-    '<figure class="technical-visual"><div class="visual-heading"><span class="eyebrow">ARCHITECTURE AT A GLANCE</span><h2 id="visual-overview">' + (Encode $v.title) + '</h2></div><div class="visual-canvas" tabindex="0" role="region" aria-label="Scrollable architecture diagram">' + $svg + '</div><figcaption>' + (Encode $v.caption) + ' Lines show the relationships labeled above; dashed lines distinguish configuration or other non-primary paths. The full procedure below explains the details.</figcaption></figure>'
+    '<figure class="technical-visual"><div class="visual-heading"><span class="eyebrow">' + (Encode (Ui $Locale 'diagramEyebrow')) + '</span><h2 id="visual-overview">' + (Encode $copy.title) + '</h2></div><div class="visual-canvas" tabindex="0" role="region" aria-label="' + (Encode (Ui $Locale 'diagramScroll')) + '">' + $svg + '</div><figcaption>' + (Encode $copy.caption) + (Encode (Ui $Locale 'diagramNote')) + '</figcaption></figure>'
 }
-function Topic-Chart([string]$slug, [string]$body) {
+function Topic-Chart([string]$slug, [string]$body, [string]$Locale = 'en') {
     $c = $visuals.$slug.chart
     if (-not $c) { return $body }
+    $copy = if ($Locale -eq 'ko') { $koVisualText.topics.$slug.chart } else { $c }
     $height = 90 + 48 * @($c.rows).Count
     $ticks = foreach ($tick in $c.ticks) {
         $x = 174 + 446 * ([double]$tick / $c.max)
@@ -54,7 +56,7 @@ function Topic-Chart([string]$slug, [string]$body) {
         $i++
     }
     $description = ($c.rows | ForEach-Object { "$($_.label): $($_.value) $($c.unit)" }) -join '; '
-    $chart = '<figure class="technical-visual measurement-chart"><div class="visual-heading"><span class="eyebrow">MEASURED, NOT ASSUMED</span><h3>' + (Encode $c.title) + '</h3><p>' + (Encode $c.subtitle) + '</p></div><div class="visual-canvas" tabindex="0" role="region" aria-label="Scrollable measurement chart"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 ' + $height + '" role="img" aria-label="' + (Encode ($c.title + '. ' + $description)) + '"><text class="diagram-kicker" x="174" y="22">' + (Encode $c.unit.ToUpperInvariant()) + '</text>' + ($ticks -join '') + ($rows -join '') + '</svg></div><figcaption>' + (Encode $c.caption) + '</figcaption></figure>'
+    $chart = '<figure class="technical-visual measurement-chart"><div class="visual-heading"><span class="eyebrow">' + (Encode (Ui $Locale 'chartEyebrow')) + '</span><h3>' + (Encode $copy.title) + '</h3><p>' + (Encode $copy.subtitle) + '</p></div><div class="visual-canvas" tabindex="0" role="region" aria-label="' + (Encode (Ui $Locale 'chartScroll')) + '"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 ' + $height + '" role="img" aria-label="' + (Encode ($copy.title + '. ' + $description)) + '"><text class="diagram-kicker" x="174" y="22">' + (Encode $c.unit.ToUpperInvariant()) + '</text>' + ($ticks -join '') + ($rows -join '') + '</svg></div><figcaption>' + (Encode $copy.caption) + '</figcaption></figure>'
     $pattern = '<h2 id="' + [regex]::Escape($c.after) + '">.*?</h2>'
     $match = [regex]::Match($body, $pattern)
     if (-not $match.Success) { throw "Chart section missing: $slug / $($c.after)" }

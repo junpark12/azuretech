@@ -1,0 +1,70 @@
+{
+  "slug": "self-hosted-aca",
+  "category": "GitHub",
+  "title": "KEDA를 활용한 Azure Container Apps의 프라이빗 GitHub Actions 실행기",
+  "summary": "프라이빗 서비스 액세스, 제어된 송신 및 관리 ID 기반 App Service 배포를 지원하는 GitHub App 인증 일회성 실행기를 구축합니다.",
+  "bodyFile": "self-hosted-aca.html",
+  "sourceDocuments": [
+    "KEDA를 활용한 Azure Container Apps의 GitHub Actions 실행기: 프라이빗 네트워킹과 GitHub App 인증",
+    "Express 배포 샘플: 실행기 이미지, 시작 스크립트, 관리 ID 워크플로 및 종속성 잠금 파일",
+    "구현 기록: 프라이빗 엔드포인트 초기화, 방화벽 문제 해결 및 종단 간 배포"
+  ],
+  "downloads": [
+    {
+      "path": "downloads/self-hosted-aca/sample-notes.txt",
+      "label": "샘플 설정 및 변경 기록",
+      "description": "파일 배치, 필수 변수, 원문에서 예제로 변경한 사항, 신뢰 경계 및 제한 사항."
+    },
+    {
+      "path": "downloads/self-hosted-aca/Dockerfile",
+      "label": "실행기 Dockerfile",
+      "description": "Azure CLI, zip 및 필수 릴리스 체크섬 검증을 갖춘 비루트 Ubuntu 실행기 이미지."
+    },
+    {
+      "path": "downloads/self-hosted-aca/start.sh",
+      "label": "GitHub App 실행기 시작 스크립트",
+      "description": "GitHub App JWT 흐름을 유지하면서 입력 검증, HTTP 요청 시간 제한, 토큰 검사 및 일회성 등록을 강화한 스크립트."
+    },
+    {
+      "path": "downloads/self-hosted-aca/dockerignore.txt",
+      "label": "이미지 빌드 컨텍스트 허용 목록",
+      "description": "전용 이미지 디렉터리에서 .dockerignore로 이름을 변경하세요. Dockerfile과 start.sh만 허용합니다."
+    },
+    {
+      "path": "downloads/self-hosted-aca/deploy.yml",
+      "label": "관리 ID 배포 워크플로",
+      "description": "구독 선택과 제한된 패키징을 포함하는 승인된 실행 저장소용 수동 전용 예제."
+    },
+    {
+      "path": "downloads/self-hosted-aca/server.js",
+      "label": "Express 애플리케이션",
+      "description": "JSON 경로와 상태 확인 엔드포인트를 갖추고 민감한 정보를 제거한 완전한 Node 애플리케이션."
+    },
+    {
+      "path": "downloads/self-hosted-aca/package.json",
+      "label": "애플리케이션 패키지 매니페스트",
+      "description": "일반화된 패키지 메타데이터와 함께 원래 Express 종속성 범위 및 테스트 스텁임을 명시한 명령을 유지합니다."
+    },
+    {
+      "path": "downloads/self-hosted-aca/package-lock.json",
+      "label": "일치하는 종속성 잠금 파일",
+      "description": "종속성 버전과 무결성 해시를 보존하고 루트 이름을 일반화했으며 후원 링크는 제외했습니다."
+    },
+    {
+      "path": "downloads/self-hosted-aca/gitignore.txt",
+      "label": "샘플 저장소 무시 규칙",
+      "description": ".gitignore로 이름을 변경하세요. 종속성, 환경 파일, 키 및 배포 아카이브를 제외합니다."
+    }
+  ],
+  "omissions": [
+    "원본 아키텍처 SVG와 GitHub/Azure 스크린샷 5개(App 설치 목록, 권한 업데이트 요청, 새 권한 승인, 워크플로 실행 결과 및 Container Apps 실행 이력)는 제외했습니다.",
+    "개인 GitHub 소유자 및 저장소, App 및 설치 ID, Azure 구독/테넌트/클라이언트/보안 주체 식별자, 리소스 목록, 실제 프라이빗 IP 범위, 배포된 호스트 이름, 로컬 경로 및 실행/로그 식별자는 공개하지 않습니다.",
+    "과거 배포 로그, 원래 응답 페이로드, 비공개 소스 URL, 커밋 이력, 원본 아카이브 및 미병합 워크플로 패치는 배포하지 않습니다. 운영상 관찰 내용은 영문에서 재서술한 내용을 번역했습니다.",
+    "더 이상 사용하지 않는 게시 프로필 추출 및 비밀 등록 명령은 실제 관리 ID 배포 방식으로 대체했습니다.",
+    "Key Vault와 ACR의 공용 액세스 활성화/비활성화 순서는 실행 가능한 권장 기본값이 아니라 보안에 민감한 과거의 선택으로 설명합니다.",
+    "유휴 인프라가 항상 무료라는 주장, GitHub App이 항상 15,000 요청 제한을 가진다는 주장, 내부 전용 모드의 완전한 격리 주장 및 VNetPeering UDR 다음 홉 명령은 그대로 반복하지 않고 바로잡았습니다.",
+    "샘플의 인스턴스 호스트 이름 응답 필드와 비공식 응답 문구를 제외했습니다. 종속성 확인 또는 무결성 메타데이터를 변경하지 않고 종속성 후원 URL을 제외했습니다."
+  ],
+  "sourceJsonSha256": "f07c1d844b19a2ad1a9a56983b2eb7e6e8a445d0015e8cadfff0d8ea95542ae0",
+  "sourceBodySha256": "c007d380f88fab4d724b35a1343345aa048a7c149317c28cee3d3ae4b1dbaa26"
+}

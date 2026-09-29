@@ -1,0 +1,62 @@
+{
+  "slug": "istio-gateway-api",
+  "category": "AKS",
+  "title": "AKS Application Routing Gateway API: 마이그레이션, 라우팅 및 Key Vault TLS",
+  "summary": "기존 수동 CSI 지침과 현재의 운영자 관리형 TLS를 구분하면서 내부 NGINX 인그레스를 관리형 Gateway API로 마이그레이션합니다.",
+  "sourceDocuments": [
+    "Application Routing Gateway API용 HTTPRoute 구성 가이드",
+    "Application Routing Gateway API GA 배포 가이드",
+    "Application Routing Gateway API: 운영자 관리형 Azure Key Vault TLS 통합",
+    "Application Routing Gateway API: 수동 Azure Key Vault TLS 통합",
+    "Application Routing으로 내부 NGINX 인그레스 구성",
+    "ingress2gateway 0.5.0의 변환 결과",
+    "ingress2gateway 1.0.0의 변환 결과",
+    "기존 NGINX Ingress 주석 목록",
+    "내부 NGINX 컨트롤러 매니페스트",
+    "Echo 샘플 애플리케이션 매니페스트",
+    "대상 Istio Gateway 및 HTTPRoute 매니페스트"
+  ],
+  "downloads": [
+    {
+      "path": "downloads/istio-gateway-api/current_env/converted-gateway.yaml",
+      "label": "기존 환경 변환 Gateway: current_env/converted-gateway.yaml",
+      "description": "민감 정보를 제거한 과거 ingress2gateway 0.5.0 출력입니다. 클래스, 인프라 및 기능 검토가 필요합니다."
+    },
+    {
+      "path": "downloads/istio-gateway-api/current_env/gwapi.yaml",
+      "label": "기존 환경 Gateway API: current_env/gwapi.yaml",
+      "description": "정규식, 전체 경로 재작성 및 제한 시간의 한계를 유지한, 민감 정보를 제거한 과거 ingress2gateway 1.0.0 출력입니다."
+    },
+    {
+      "path": "downloads/istio-gateway-api/current_env/internal-ingress.yaml",
+      "label": "기존 환경 내부 인그레스: current_env/internal-ingress.yaml",
+      "description": "컨트롤러 클래스 및 TLS 구성에 관한 명시적 경고를 포함한 기존 NGINX 주석 목록입니다."
+    },
+    {
+      "path": "downloads/istio-gateway-api/current_env/internal-nginx-controller.yaml",
+      "label": "기존 환경 내부 NGINX 컨트롤러: current_env/internal-nginx-controller.yaml",
+      "description": "내부 Azure LoadBalancer를 사용하는 Application Routing NGINX 컨트롤러입니다."
+    },
+    {
+      "path": "downloads/istio-gateway-api/current_env/sample-app.yaml",
+      "label": "기존 환경 샘플 앱: current_env/sample-app.yaml",
+      "description": "Echo 애플리케이션 네임스페이스, 복제본 2개의 Deployment 및 포트 80 Service입니다."
+    },
+    {
+      "path": "downloads/istio-gateway-api/tobe_env/gateway.yaml",
+      "label": "대상 환경 Gateway: tobe_env/gateway.yaml",
+      "description": "민감 정보를 제거한 대상 HTTP 전용 approuting-istio Gateway 및 echo 경로입니다. NGINX의 모든 기능과 동등하지는 않습니다."
+    }
+  ],
+  "omissions": [
+    "반복되는 설정 및 TLS 내용을 통합했습니다. 운영자 개정판을 명확하게 우선하며 이전 수동 구성 절차도 대체 경로로 문서화했습니다.",
+    "관찰된 클라우드 식별자, 사설 호스트 이름, 노드/Pod 이름, 네트워크 주소 및 요청 ID는 제거하거나 대체했으며 원래 값과의 매핑은 공개하지 않습니다.",
+    "참조된 독립 마이그레이션 가이드는 리포지토리 목록에 없습니다. 내용이나 파일을 만들어 내지 않았습니다.",
+    "마스킹되었거나 손상된 PFX 명령은 복원하지 않았습니다. 입력 암호 변수를 사용하는 안전하고 명시적인 내보내기/가져오기 작업을 설명합니다.",
+    "보고된 빈 상태 프로브 주석은 검증된 배포 해결책이 아닌 과거 재현 사례로만 유지했습니다. 포트 443 문제와 제품 수정 예상 일정은 아직 해결되지 않았습니다.",
+    "공통 HTTPRoute 외곽 구조와 반복되는 인증서 객체 패턴은 레이블이 있는 조각으로 통합하면서 모든 실질적인 규칙 동작은 유지했습니다."
+  ],
+  "bodyFile": "istio-gateway-api.html",
+  "sourceJsonSha256": "76accc3300cb8e93fc72d7ec1f6d28e7e7adbe473ce9e7c28e690c1a3ab0b5f1",
+  "sourceBodySha256": null
+}

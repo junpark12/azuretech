@@ -1,0 +1,39 @@
+{
+  "slug": "content-safety-streaming",
+  "category": "AI",
+  "title": "APIM AI Gateway: 스트리밍 응답을 위한 Content Safety",
+  "summary": "llm-content-safety, 관리 ID, 정규식 차단 목록, 여덟 가지 정책 시나리오, 현재 디버그 추적, 스트리밍 윈도와 겹침의 탐지·지연 시간 절충 관계를 다루는 실습 가이드입니다.",
+  "bodyFile": "content-safety-streaming.html",
+  "sourceJsonSha256": "ef0689569413452c10bfdf59d6ffdf6754c2731aea395c6a9363581519302f5e",
+  "sourceBodySha256": "d179d3034117f47880c02469548453602b56d14fd5ffafb84f192f7dbf2c9063",
+  "sourceDocuments": [
+    "APIM AI Gateway: llm-content-safety 아웃바운드 스트리밍 검사 실습 가이드",
+    "검토된 패스스루 기준 정책",
+    "ARM 원시 XML 정책 페이로드"
+  ],
+  "downloads": [
+    {
+      "path": "downloads/content-safety-streaming/base-policy.xml",
+      "label": "패스스루 기준 정책(XML)",
+      "description": "검토된 원문 부속 파일과 바이트 단위로 동일합니다. 스트리밍 패스스루로 모델 요청을 라우팅하고 인증하며 Content Safety 검사를 활성화하지 않습니다."
+    },
+    {
+      "path": "downloads/content-safety-streaming/policy-payload.json",
+      "label": "패스스루 기준 ARM 페이로드(JSON)",
+      "description": "검토된 원문 부속 파일과 바이트 단위로 동일하며 rawxml 값은 base-policy.xml과 같습니다. Content Safety 검사를 활성화하지 않습니다."
+    },
+    {
+      "path": "downloads/content-safety-streaming/outbound-blocklist-policy.xml",
+      "label": "원문 기반 아웃바운드 범주 및 차단 목록 정책(XML)",
+      "description": "원문의 기준 구성에 윈도 3000/겹침 500의 아웃바운드 검사와 합성 실습 차단 목록 pii-known-values를 결합한 전체 API 수준 예시입니다. 프로비저닝, RBAC, 수동 백엔드 관리 ID 구성, 차단 목록 등록이 필요합니다. 이번 편집 검토에서 배포하거나 Azure에서 검증하지 않았습니다."
+    }
+  ],
+  "omissions": [
+    "원래 언어의 원문, 비공개 저장소 위치, 커밋 메타데이터, 로컬 경로, 환경 식별자는 공개하지 않습니다. 영어 원문 문서와 샘플에는 영어 설명과 중립적인 실습 변수만 포함됩니다.",
+    "원본 요청 및 응답 본문, analyzedChunk 값, 전체 추적, 자격 증명, 리소스 엔드포인트, 구독·테넌트·보안 주체·차단 목록 항목 식별자는 게시하지 않습니다. 식별자처럼 보이는 예시는 의도적으로 유효하지 않게 만든 합성 형식 테스트 데이터입니다.",
+    "과거 관찰 결과는 유지했지만 이번 편집 검토에서 재실행하지 않았습니다. 원문에는 원시 벤치마크 데이터셋, 결정적 재생 백엔드, 프로덕션 테스트 하네스, 측정된 지연 시간 분포가 제공되지 않습니다.",
+    "원문은 정확한 Content Safety 호출 횟수, 보편적인 최초 플러시 시점, Unicode 윈도 문자 계산 방식, 완전한 messages/tools 직렬화 모델, JSON 바이트 크기로 정해지는 보편적인 인바운드 차단 경계를 확정하지 않습니다.",
+    "검토한 ARM API 버전에 대해 검증된 백엔드 credentials.managedIdentity REST 계약이 있다고 주장하지 않습니다. 필요한 포털 관리 ID 구성은 수동 단계로 남습니다.",
+    "폐기된 마스터 구독 추적과 SAS 추적 다운로드 절차는 실행 가능한 지침으로 재현하지 않습니다. 수명이 짧은 API별 디버그 자격 증명과 인증된 listTrace를 사용하세요."
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "slug": "ai-gateway",
+  "category": "AI",
+  "title": "Azure AI Gateway 계층: 미리 보기 설정, 정책, MCP 및 토큰 모니터링",
+  "summary": "전용 AI Gateway 미리 보기 계층을 원문에 근거해 기술적으로 평가하고, 측정된 정책 동작과 애플리케이션 수준 토큰 보고를 살펴봅니다.",
+  "bodyFile": "ai-gateway.html",
+  "sourceDocuments": [
+    "AI Gateway 계층 기술 검증 보고서 — 2026년 8월 20일"
+  ],
+  "downloads": [
+    {
+      "path": "downloads/ai-gateway/gateway-requests.http",
+      "label": "gateway-requests.http",
+      "description": "원문에서 파생하고 민감 정보를 제거한 채팅, MCP 검색 및 수동 제어 정책 테스트 요청입니다."
+    },
+    {
+      "path": "downloads/ai-gateway/responses-agent.py",
+      "label": "responses-agent.py",
+      "description": "환경 변수로 구성하며 도구 승인 방식을 명시적으로 선택하는 Responses/MCP 에이전트 템플릿입니다."
+    },
+    {
+      "path": "downloads/ai-gateway/resource-commands.sh",
+      "label": "resource-commands.sh",
+      "description": "원문에서 파생한 Foundry 프로비저닝 및 게이트웨이 검사 명령입니다. 값 지정과 별도의 실행 승인이 필요합니다."
+    },
+    {
+      "path": "downloads/ai-gateway/token-usage.promql",
+      "label": "token-usage.promql",
+      "description": "원문의 PromQL 토큰 사용량 쿼리를 매개 변수화한 템플릿입니다."
+    }
+  ],
+  "omissions": [
+    "원본 포털 스크린샷 22개를 모두 제외했습니다. 생성/선택, Foundry 가져오기, 홈, MCP 원본/개요/목록, 네트워킹, 네 가지 정책 설정, 원격 분석 대상/인증, 모니터링 상태/차트가 해당됩니다. 이미지 식별자나 메타데이터 없이 절차와 측정값을 본문에 보존했습니다.",
+    "반복되는 요약 표, 중복 호출 예제 및 아키텍처 다이어그램은 핵심 동작, 근거, 제한 사항, 의사 결정 기준을 유지하면서 텍스트로 통합했습니다.",
+    "원본 리소스, 계정, 공급자, 게이트웨이 모델 등록, 키 이름, MCP 서버, 보안 주체, 모니터링 계정, 호스트 및 경로 식별자는 명시적 매개 변수로 대체했습니다. 원본 소스 링크와 작성자 메타데이터는 제외했습니다.",
+    "원문의 일곱 요청 셸 루프는 응답/헤더 파일을 로컬 컴퓨터 경로에 기록했습니다. 함께 제공하는 HTTP 템플릿은 파일 시스템에 출력하지 않고 의도적으로 수동 반복하도록 구성했습니다.",
+    "원문의 안전하지 않은 자동 MCP 승인 설정을 기본값으로 사용하지 않습니다. 함께 제공하는 스크립트는 명시적 선택을 요구하고 대화형 승인 처리를 추가합니다. 불완전했던 초기 SDK 인증 코드 대신 원문 후반부에서 작동한 api-key 헤더 패턴을 사용합니다.",
+    "유해 콘텐츠 테스트 프롬프트 원문은 제외했습니다. 요청 유형, 거절 동작, 측정된 토큰 수, 필터링의 구분 및 차단 결과는 유지했습니다."
+  ],
+  "sourceJsonSha256": "94ec8a78ce4c3370975a73a6d53ef5ae3f270448cb14952acda1e3f34b14fa3c",
+  "sourceBodySha256": null
+}

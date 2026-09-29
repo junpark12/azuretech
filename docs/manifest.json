@@ -1,99 +1,209 @@
 {
-    "edition":  "2026-09",
-    "topicCount":  13,
+    "pageCount":  28,
+    "resources":  [
+                      "downloads/ai-gateway/gateway-requests.http",
+                      "downloads/ai-gateway/resource-commands.sh",
+                      "downloads/ai-gateway/responses-agent.py",
+                      "downloads/ai-gateway/token-usage.promql",
+                      "downloads/ai-gateway-existing/chat.xml",
+                      "downloads/ai-gateway-existing/diagnostic.json",
+                      "downloads/ai-gateway-existing/legacy-chat.xml",
+                      "downloads/ai-gateway-existing/legacytest.http",
+                      "downloads/ai-gateway-existing/logger.json",
+                      "downloads/ai-gateway-existing/monitoring.kql",
+                      "downloads/ai-gateway-existing/pool.json",
+                      "downloads/ai-gateway-existing/responses.xml",
+                      "downloads/ai-gateway-existing/responsetest.http",
+                      "downloads/ai-gateway-existing/responsetest2.http",
+                      "downloads/ai-gateway-existing/single-backends.json",
+                      "downloads/ai-gateway-existing/test_gateway.py",
+                      "downloads/ai-gateway-existing/test_legacy_usage.py",
+                      "downloads/ai-gateway-existing/test_monitoring.py",
+                      "downloads/ai-gateway-existing/v1test.http",
+                      "downloads/aks-confidential-vm/cvm-graceful-test.yaml",
+                      "downloads/content-safety-streaming/base-policy.xml",
+                      "downloads/content-safety-streaming/outbound-blocklist-policy.xml",
+                      "downloads/content-safety-streaming/policy-payload.json",
+                      "downloads/istio-gateway-api/current_env/converted-gateway.yaml",
+                      "downloads/istio-gateway-api/current_env/gwapi.yaml",
+                      "downloads/istio-gateway-api/current_env/internal-ingress.yaml",
+                      "downloads/istio-gateway-api/current_env/internal-nginx-controller.yaml",
+                      "downloads/istio-gateway-api/current_env/sample-app.yaml",
+                      "downloads/istio-gateway-api/tobe_env/gateway.yaml",
+                      "downloads/self-hosted-aca/deploy.yml",
+                      "downloads/self-hosted-aca/Dockerfile",
+                      "downloads/self-hosted-aca/dockerignore.txt",
+                      "downloads/self-hosted-aca/gitignore.txt",
+                      "downloads/self-hosted-aca/package.json",
+                      "downloads/self-hosted-aca/package-lock.json",
+                      "downloads/self-hosted-aca/sample-notes.txt",
+                      "downloads/self-hosted-aca/server.js",
+                      "downloads/self-hosted-aca/start.sh"
+                  ],
     "topics":  [
                    {
-                       "sourceDocumentCount":  3,
-                       "title":  "APIM AI Gateway: Content Safety for Streaming Responses",
-                       "category":  "AI",
+                       "paths":  {
+                                     "en":  "topics/content-safety-streaming.html",
+                                     "ko":  "ko/topics/content-safety-streaming.html"
+                                 },
+                       "slug":  "content-safety-streaming",
+                       "titleKo":  "APIM AI Gateway: 스트리밍 응답을 위한 Content Safety",
                        "resourceCount":  3,
-                       "slug":  "content-safety-streaming"
-                   },
-                   {
-                       "sourceDocumentCount":  1,
-                       "title":  "Azure AI Gateway Tier: Preview Setup, Policies, MCP, and Token Monitoring",
-                       "category":  "AI",
-                       "resourceCount":  4,
-                       "slug":  "ai-gateway"
-                   },
-                   {
-                       "sourceDocumentCount":  5,
-                       "title":  "Codex on Azure: Foundry setup, APIM routing, streaming failures, and capacity design",
-                       "category":  "AI",
-                       "resourceCount":  0,
-                       "slug":  "codex"
-                   },
-                   {
-                       "sourceDocumentCount":  4,
-                       "title":  "Existing APIM as a Foundry AI Gateway: Backend Pools, Managed Identity, Retry, and Monitoring",
-                       "category":  "AI",
-                       "resourceCount":  15,
-                       "slug":  "ai-gateway-existing"
-                   },
-                   {
-                       "sourceDocumentCount":  1,
-                       "title":  "Translation latency across six GPT models: an April 2026 Azure benchmark",
-                       "category":  "AI",
-                       "resourceCount":  0,
-                       "slug":  "translation-performance"
-                   },
-                   {
-                       "sourceDocumentCount":  11,
-                       "title":  "AKS Application Routing Gateway API: Migration, Routing, and Key Vault TLS",
-                       "category":  "AKS",
-                       "resourceCount":  6,
-                       "slug":  "istio-gateway-api"
-                   },
-                   {
-                       "sourceDocumentCount":  2,
-                       "title":  "AKS Confidential VMs: Azure Linux 3 Deployment and Honest Upgrade Evidence",
-                       "category":  "AKS",
-                       "resourceCount":  1,
-                       "slug":  "aks-confidential-vm"
-                   },
-                   {
-                       "sourceDocumentCount":  1,
-                       "title":  "Artifact Streaming on AKS: Configure, Benchmark, and Roll Back",
-                       "category":  "AKS",
-                       "resourceCount":  0,
-                       "slug":  "acr-streaming"
-                   },
-                   {
-                       "sourceDocumentCount":  1,
-                       "title":  "Migrating AKS from No Network Policy to Cilium",
-                       "category":  "AKS",
-                       "resourceCount":  0,
-                       "slug":  "cilium-network-policy"
-                   },
-                   {
-                       "sourceDocumentCount":  2,
-                       "title":  "Self-Managed Envoy Gateway on AKS and NGINX Migration",
-                       "category":  "AKS",
-                       "resourceCount":  0,
-                       "slug":  "envoy-gateway"
-                   },
-                   {
-                       "sourceDocumentCount":  1,
-                       "title":  "ASE v3 Front-end Scaling: Signals, Timing, and Cost",
-                       "category":  "App Service",
-                       "resourceCount":  0,
-                       "slug":  "ase-frontend-scaling"
-                   },
-                   {
-                       "sourceDocumentCount":  2,
-                       "title":  "Managed Instance on App Service: Capabilities and PoC",
-                       "category":  "App Service",
-                       "resourceCount":  0,
-                       "slug":  "managed-instance"
-                   },
-                   {
                        "sourceDocumentCount":  3,
-                       "title":  "Private GitHub Actions Runners on Azure Container Apps with KEDA",
-                       "category":  "GitHub",
+                       "category":  "AI",
+                       "title":  "APIM AI Gateway: Content Safety for Streaming Responses"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/ai-gateway.html",
+                                     "ko":  "ko/topics/ai-gateway.html"
+                                 },
+                       "slug":  "ai-gateway",
+                       "titleKo":  "Azure AI Gateway 계층: 미리 보기 설정, 정책, MCP 및 토큰 모니터링",
+                       "resourceCount":  4,
+                       "sourceDocumentCount":  1,
+                       "category":  "AI",
+                       "title":  "Azure AI Gateway Tier: Preview Setup, Policies, MCP, and Token Monitoring"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/codex.html",
+                                     "ko":  "ko/topics/codex.html"
+                                 },
+                       "slug":  "codex",
+                       "titleKo":  "Azure의 Codex: Foundry 설정, APIM 라우팅, 스트리밍 실패와 용량 설계",
+                       "resourceCount":  0,
+                       "sourceDocumentCount":  5,
+                       "category":  "AI",
+                       "title":  "Codex on Azure: Foundry setup, APIM routing, streaming failures, and capacity design"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/ai-gateway-existing.html",
+                                     "ko":  "ko/topics/ai-gateway-existing.html"
+                                 },
+                       "slug":  "ai-gateway-existing",
+                       "titleKo":  "기존 APIM을 Foundry AI 게이트웨이로 사용하기: 백엔드 풀, 관리 ID, 재시도 및 모니터링",
+                       "resourceCount":  15,
+                       "sourceDocumentCount":  4,
+                       "category":  "AI",
+                       "title":  "Existing APIM as a Foundry AI Gateway: Backend Pools, Managed Identity, Retry, and Monitoring"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/translation-performance.html",
+                                     "ko":  "ko/topics/translation-performance.html"
+                                 },
+                       "slug":  "translation-performance",
+                       "titleKo":  "6개 GPT 모델의 번역 지연: 2026년 4월 Azure 벤치마크",
+                       "resourceCount":  0,
+                       "sourceDocumentCount":  1,
+                       "category":  "AI",
+                       "title":  "Translation latency across six GPT models: an April 2026 Azure benchmark"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/istio-gateway-api.html",
+                                     "ko":  "ko/topics/istio-gateway-api.html"
+                                 },
+                       "slug":  "istio-gateway-api",
+                       "titleKo":  "AKS Application Routing Gateway API: 마이그레이션, 라우팅 및 Key Vault TLS",
+                       "resourceCount":  6,
+                       "sourceDocumentCount":  11,
+                       "category":  "AKS",
+                       "title":  "AKS Application Routing Gateway API: Migration, Routing, and Key Vault TLS"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/aks-confidential-vm.html",
+                                     "ko":  "ko/topics/aks-confidential-vm.html"
+                                 },
+                       "slug":  "aks-confidential-vm",
+                       "titleKo":  "AKS 기밀 VM: Azure Linux 3 배포와 과장 없는 업그레이드 근거",
+                       "resourceCount":  1,
+                       "sourceDocumentCount":  2,
+                       "category":  "AKS",
+                       "title":  "AKS Confidential VMs: Azure Linux 3 Deployment and Honest Upgrade Evidence"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/acr-streaming.html",
+                                     "ko":  "ko/topics/acr-streaming.html"
+                                 },
+                       "slug":  "acr-streaming",
+                       "titleKo":  "AKS Artifact Streaming: 구성, 벤치마크, 롤백",
+                       "resourceCount":  0,
+                       "sourceDocumentCount":  1,
+                       "category":  "AKS",
+                       "title":  "Artifact Streaming on AKS: Configure, Benchmark, and Roll Back"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/cilium-network-policy.html",
+                                     "ko":  "ko/topics/cilium-network-policy.html"
+                                 },
+                       "slug":  "cilium-network-policy",
+                       "titleKo":  "네트워크 정책이 없는 AKS를 Cilium으로 마이그레이션하기",
+                       "resourceCount":  0,
+                       "sourceDocumentCount":  1,
+                       "category":  "AKS",
+                       "title":  "Migrating AKS from No Network Policy to Cilium"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/envoy-gateway.html",
+                                     "ko":  "ko/topics/envoy-gateway.html"
+                                 },
+                       "slug":  "envoy-gateway",
+                       "titleKo":  "AKS의 자체 관리형 Envoy Gateway와 NGINX 마이그레이션",
+                       "resourceCount":  0,
+                       "sourceDocumentCount":  2,
+                       "category":  "AKS",
+                       "title":  "Self-Managed Envoy Gateway on AKS and NGINX Migration"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/ase-frontend-scaling.html",
+                                     "ko":  "ko/topics/ase-frontend-scaling.html"
+                                 },
+                       "slug":  "ase-frontend-scaling",
+                       "titleKo":  "ASE v3 프런트 엔드 확장: 신호, 소요 시간 및 비용",
+                       "resourceCount":  0,
+                       "sourceDocumentCount":  1,
+                       "category":  "App Service",
+                       "title":  "ASE v3 Front-end Scaling: Signals, Timing, and Cost"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/managed-instance.html",
+                                     "ko":  "ko/topics/managed-instance.html"
+                                 },
+                       "slug":  "managed-instance",
+                       "titleKo":  "App Service의 Managed Instance: 기능과 PoC",
+                       "resourceCount":  0,
+                       "sourceDocumentCount":  2,
+                       "category":  "App Service",
+                       "title":  "Managed Instance on App Service: Capabilities and PoC"
+                   },
+                   {
+                       "paths":  {
+                                     "en":  "topics/self-hosted-aca.html",
+                                     "ko":  "ko/topics/self-hosted-aca.html"
+                                 },
+                       "slug":  "self-hosted-aca",
+                       "titleKo":  "KEDA를 활용한 Azure Container Apps의 프라이빗 GitHub Actions 실행기",
                        "resourceCount":  9,
-                       "slug":  "self-hosted-aca"
+                       "sourceDocumentCount":  3,
+                       "category":  "GitHub",
+                       "title":  "Private GitHub Actions Runners on Azure Container Apps with KEDA"
                    }
                ],
+    "edition":  "2026-09",
+    "languages":  [
+                      "en",
+                      "ko"
+                  ],
+    "topicCount":  13,
     "portalScreenshots":  [
                               {
                                   "capturedOn":  "2026-09-17",
@@ -137,45 +247,5 @@
                                   "id":  "acr-artifact-referrers",
                                   "topic":  "acr-streaming"
                               }
-                          ],
-    "resources":  [
-                      "downloads/ai-gateway/gateway-requests.http",
-                      "downloads/ai-gateway/resource-commands.sh",
-                      "downloads/ai-gateway/responses-agent.py",
-                      "downloads/ai-gateway/token-usage.promql",
-                      "downloads/ai-gateway-existing/chat.xml",
-                      "downloads/ai-gateway-existing/diagnostic.json",
-                      "downloads/ai-gateway-existing/legacy-chat.xml",
-                      "downloads/ai-gateway-existing/legacytest.http",
-                      "downloads/ai-gateway-existing/logger.json",
-                      "downloads/ai-gateway-existing/monitoring.kql",
-                      "downloads/ai-gateway-existing/pool.json",
-                      "downloads/ai-gateway-existing/responses.xml",
-                      "downloads/ai-gateway-existing/responsetest.http",
-                      "downloads/ai-gateway-existing/responsetest2.http",
-                      "downloads/ai-gateway-existing/single-backends.json",
-                      "downloads/ai-gateway-existing/test_gateway.py",
-                      "downloads/ai-gateway-existing/test_legacy_usage.py",
-                      "downloads/ai-gateway-existing/test_monitoring.py",
-                      "downloads/ai-gateway-existing/v1test.http",
-                      "downloads/aks-confidential-vm/cvm-graceful-test.yaml",
-                      "downloads/content-safety-streaming/base-policy.xml",
-                      "downloads/content-safety-streaming/outbound-blocklist-policy.xml",
-                      "downloads/content-safety-streaming/policy-payload.json",
-                      "downloads/istio-gateway-api/current_env/converted-gateway.yaml",
-                      "downloads/istio-gateway-api/current_env/gwapi.yaml",
-                      "downloads/istio-gateway-api/current_env/internal-ingress.yaml",
-                      "downloads/istio-gateway-api/current_env/internal-nginx-controller.yaml",
-                      "downloads/istio-gateway-api/current_env/sample-app.yaml",
-                      "downloads/istio-gateway-api/tobe_env/gateway.yaml",
-                      "downloads/self-hosted-aca/deploy.yml",
-                      "downloads/self-hosted-aca/Dockerfile",
-                      "downloads/self-hosted-aca/dockerignore.txt",
-                      "downloads/self-hosted-aca/gitignore.txt",
-                      "downloads/self-hosted-aca/package.json",
-                      "downloads/self-hosted-aca/package-lock.json",
-                      "downloads/self-hosted-aca/sample-notes.txt",
-                      "downloads/self-hosted-aca/server.js",
-                      "downloads/self-hosted-aca/start.sh"
-                  ]
+                          ]
 }

@@ -1,0 +1,757 @@
+<p>이 통합 운영 가이드는 관리형 Application Routing Gateway API 설치, 내부 NGINX 기준 구성과 변환 산출물, 공유 HTTPRoute 패턴, Gateway 운영 및 두 세대의 Key Vault 통합을 다룹니다. 별도로 설치하는 Envoy Gateway Helm 제품이 아닙니다. 모든 비공개 환경 식별자는 제거했으며 example.com과 contoso 도메인은 예시입니다.</p><h2 id="versions-and-evolution">1. 절차를 선택하기 전에 변경 이력 확인</h2><table><thead><tr><th>원본 문서 세대</th><th>확인된 내용</th><th>현재 활용 방법</th></tr></thead><tbody><tr><td>내부 NGINX 기준 구성, 2026년 3월 19일</td><td>추가 내부 NGINX 컨트롤러를 퍼블릭 컨트롤러와 함께 실행할 수 있으며 echo 앱으로 프라이빗 인그레스를 검증합니다.</td><td>대상 아키텍처가 아닌 마이그레이션 기준 구성입니다.</td></tr><tr><td>GA 가이드, AKS v20260428</td><td>관리형 Gateway API 및 approuting-istio. Kubernetes 1.34.7, Istio 1.29.2-1, Standard Gateway API v1.3.0으로 테스트했습니다.</td><td>원본 작성 당시의 한계와 미해결 버그에 유의하면서 버전과 리전을 확인하세요.</td></tr><tr><td>초기 수동 Key Vault TLS 가이드</td><td>SPC + 지속적으로 마운트된 CSI 볼륨 + Kubernetes TLS Secret + certificateRefs.</td><td>Application Routing 운영자 통합을 사용할 수 없을 때의 대체 경로이며 인증서 저장소 격리도 설명합니다.</td></tr><tr><td>업데이트된 운영자 TLS 가이드</td><td>Application Routing 운영자가 Workload Identity를 사용하여 SPC, 동기화 및 certificateRefs를 자동화합니다.</td><td>지원되는 환경에서 우선하는 원본 절차입니다. 관리자가 더미 동기화 Deployment를 만들 필요가 없습니다.</td></tr></tbody></table><blockquote>초기 GA/수동 문서는 즉시 사용할 수 있는 Key Vault 통합이 없다고 설명합니다. 업데이트된 문서는 이 설명을 명시적으로 대체합니다. 반면 이 TLS 업데이트는 의도적으로 ClusterExternalDNS/ExternalDNS 자동화를 다루지 않습니다. 과거 제약을 현재 제약으로 해석하거나, TLS만 다루는 이 문서를 따라 DNS 자동화까지 구성했다고 생각하면 안 됩니다.</blockquote><p>원본의 GA 기준일은 2026년 4월 28일이며, 6월 확인 당시 East US와 Korea Central에서 출시가 완료되었습니다. 이는 관찰 기록이지 실시간 출시 보고서가 아닙니다. 이 게시물을 작성하기 위해 Azure 작업을 실행하지 않았습니다.</p><h2 id="prerequisites">2. 사전 요구 사항 및 충돌하는 설치 확인</h2><ul><li>GA 절차에는 Azure CLI 2.86.0 이상이 필요하며 미리 보기 확장은 필요하지 않습니다.</li><li>대상 리전의 리소스 공급자 출시에 v20260428 이상이 포함되어야 합니다. <a href="https://releases.aks.azure.com/">AKS Release Tracker</a>를 확인하세요.</li><li>AKS 관리형 Gateway API 설치를 사용하세요. 자체 관리형 Gateway API CRD와 Experimental 채널 CRD는 원본에서 지원하는 구성이 아닙니다.</li><li>설명된 구성에서는 Application Routing Gateway API와 Istio 서비스 메시 추가 기능을 동시에 활성화할 수 없습니다.</li><li>이 구현을 활성화하기 전에 잔여 Istio CRD와 기존 istio GatewayClass 목록을 확인하세요. 남아 있는 메시 리소스가 컨트롤 플레인 시작과 충돌할 수 있습니다.</li></ul><pre><code class="language-bash">export RESOURCE_GROUP="YOUR_RESOURCE_GROUP"
+export CLUSTER="YOUR_CLUSTER"
+export LOCATION="YOUR_AZURE_REGION"
+az --version | head -3
+az upgrade
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" --query serviceMeshProfile
+kubectl get crd | grep istio.io
+kubectl get gatewayclass istio
+kubectl get crd gateways.gateway.networking.k8s.io -o yaml | grep channel</code></pre><blockquote>원본에는 충돌 정리 절차로 모든 Istio CRD와 istio GatewayClass를 삭제하는 내용이 있습니다. CRD 삭제는 VirtualService와 DestinationRule 객체를 포함한 모든 관련 사용자 지정 리소스도 삭제합니다. 먼저 실제 워크로드를 백업하고 마이그레이션하세요. 지원되는 절차로 메시를 비활성화하고 미사용으로 확인된 리소스만 삭제하세요. 공유 프로덕션 클러스터에서 CRD를 일괄 삭제하지 마세요.</blockquote><h2 id="enable-and-verify">3. 관리형 구현 활성화 및 검증</h2><pre><code class="language-bash"># New disposable cluster: enable the prerequisite and implementation together.
+az aks create -g "$RESOURCE_GROUP" -n "$CLUSTER" -l "$LOCATION" \
+  --enable-gateway-api --enable-app-routing-istio \
+  --node-count 2 --node-vm-size Standard_D2a_v4 --generate-ssh-keys
+
+# OR an existing cluster, in this order:
+az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" --enable-gateway-api
+az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" --enable-app-routing-istio
+# Equivalent combined update:
+# az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" --enable-gateway-api --enable-app-routing-istio
+az aks get-credentials -g "$RESOURCE_GROUP" -n "$CLUSTER" --overwrite-existing
+kubectl get crd | grep gateway.networking.k8s.io
+kubectl get gatewayclass
+kubectl get pods -n aks-istio-system
+kubectl get validatingwebhookconfiguration
+kubectl get cm -n aks-istio-system istio-gateway-class-defaults</code></pre><p>원본 기준 구성에서는 GatewayClass <code>approuting-istio</code>, Running 상태의 istiod Pod 2개 및 <code>azure-service-mesh-ccp-validating-webhook</code>이 있어야 합니다. CRD 목록에는 GatewayClass, Gateway, HTTPRoute, GRPCRoute 및 ReferenceGrant가 포함됩니다. app-routing-istio를 먼저 활성화했을 때 원본에서는 CLI 명령은 성공했으나 관리형 Gateway API도 활성화하기 전까지 GatewayClass와 기본값 ConfigMap이 생성되지 않았습니다.</p><table><thead><tr><th>원본 매트릭스의 AKS Kubernetes 버전</th><th>관리형 Gateway API 번들</th></tr></thead><tbody><tr><td>1.26.x–1.33.x</td><td>v1.2.1</td></tr><tr><td>1.34.x</td><td>v1.3.0</td></tr><tr><td>1.35.0+</td><td>v1.4.1</td></tr></tbody></table><pre><code class="language-bash">kubectl get crd gateways.gateway.networking.k8s.io -o jsonpath='{.metadata.annotations}'
+kubectl get deploy -n aks-istio-system istiod \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+helm list -A | grep -E 'azure-service-mesh-istio-discovery|aks-managed-overlay'</code></pre><p>Deployment 이름에 리비전이 포함되어 있으면 이름이 항상 istiod라고 가정하지 말고 <code>kubectl get deploy -n aks-istio-system -l app=istiod</code>로 찾으세요. 원본은 이미지를 GA 릴리스 태그 asm-1-27 1.27.9-2, asm-1-28 1.28.6-1 및 asm-1-29 1.29.2-1과 비교하고, v20260520-addon-260521-1 같은 추가 기능 차트 빌드도 비교합니다. 이런 확인은 오래된 CLI Preview 경고와 배포된 빌드를 구별하는 데 도움이 되지만 날짜나 태그만으로 해당 지원 및 출시 문서를 대신할 수는 없습니다.</p><h2 id="nginx-baseline">4. 과거 내부 NGINX 기준 구성 재현</h2><p>과거 환경은 Azure CNI와 Cilium, 노드 3개의 Standard_D2as_v5 풀 및 이미 활성화된 Application Routing 추가 기능을 사용했습니다. 퍼블릭 기본 컨트롤러가 있었으며 초기에는 Ingress나 Gateway API 리소스가 없었습니다. 실제 풀 이름, Pod CIDR 및 주소는 의도적으로 생략했습니다. 퍼블릭 컨트롤러를 방해하지 말고 내부 컨트롤러를 추가로 만드세요.</p><pre><code class="language-yaml">apiVersion: approuting.kubernetes.azure.com/v1alpha1
+kind: NginxIngressController
+metadata:
+  name: nginx-internal
+spec:
+  ingressClassName: nginx-internal
+  controllerNamePrefix: nginx-internal
+  loadBalancerAnnotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"</code></pre><pre><code class="language-bash">kubectl apply -f downloads/istio-gateway-api/current_env/internal-nginx-controller.yaml
+kubectl apply -f downloads/istio-gateway-api/current_env/sample-app.yaml
+kubectl get ingressclass
+kubectl get svc,pods -n app-routing-system
+kubectl get pods,svc -n demo</code></pre><p>제공된 sample-app.yaml은 demo 네임스페이스, ealen/echo-server:latest를 사용하는 echo Pod 2개 및 포트 80의 echo Service를 만듭니다. 이 이미지 태그는 과거 사용된 변경 가능한 태그이므로 프로덕션에서는 검토한 버전을 고정하세요. 실습 환경에서 생성된 내부 Service는 <code>nginx-internal-0</code>였으며 컨트롤러 Pod 2개는 Running 상태였고 메트릭 Service는 10254를 노출했습니다. 원본 테스트 명령은 이와 일치하지 않게 nginx-internal을 조회했습니다. 실제 생성된 Service를 찾아 해당 이름을 사용하세요.</p><p>최소 HTTP 기준 구성에는 주석이 많은 변환용 입력 대신 다음 Ingress를 적용하세요.</p><pre><code class="language-yaml">apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo-ingress
+  namespace: demo
+spec:
+  ingressClassName: nginx-internal
+  rules:
+  - host: echo.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: echo
+            port: {number: 80}</code></pre><pre><code class="language-bash">export NGINX_SERVICE="YOUR_DISCOVERED_NGINX_SERVICE"
+INTERNAL_IP=$(kubectl get svc -n app-routing-system "$NGINX_SERVICE" \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+kubectl run curl-test --rm -it --restart=Never --image=curlimages/curl -- \
+  curl -H "Host: echo.example.com" "http://$INTERNAL_IP/"
+kubectl get ingress -n demo</code></pre><p>클러스터 또는 연결된 VNet에서 테스트하세요. 과거 echo 응답은 요청한 Host, GET /, HTTP 프로토콜 및 전달 헤더를 확인하여 Internal LB → NGINX → echo 흐름을 보여주었습니다. 내부 컨트롤러와 퍼블릭 컨트롤러는 공존할 수 있습니다. 기본 퍼블릭 NginxIngressController 제거는 선택 사항이며 모든 종속 트래픽을 확인한 뒤에만 안전합니다.</p><h2 id="download-artifacts">5. 원본 YAML 다운로드 6개 이해</h2><table><thead><tr><th>파일</th><th>용도 및 한계</th></tr></thead><tbody><tr><td>current_env/internal-nginx-controller.yaml</td><td>nginx-internal 클래스를 사용하는 추가 내부 NginxIngressController입니다.</td></tr><tr><td>current_env/sample-app.yaml</td><td>네임스페이스, 복제본 2개의 echo Deployment 및 Service입니다.</td></tr><tr><td>current_env/internal-ingress.yaml</td><td>최소 기준 구성이 아닌, 주석이 많은 마이그레이션 목록입니다. 원본 클래스 nginx를 유지하므로 제공된 nginx-internal 컨트롤러와 맞지 않습니다. TLS 리디렉션 주석에는 그에 대응하는 spec.tls가 없습니다.</td></tr><tr><td>current_env/converted-gateway.yaml</td><td>ingress2gateway 0.5.0 출력: 클래스 nginx, HTTP 리스너, 접두사 / 경로 및 빈 status 필드입니다.</td></tr><tr><td>current_env/gwapi.yaml</td><td>ingress2gateway 1.0.0 출력: 클래스 nginx, 정규식 (?i)/.*, 전체 경로 재작성 /, 이름 있는 규칙 및 요청 제한 시간 20m0s입니다. 검증된 동등 구성이 아니라 중간 변환 산출물입니다.</td></tr><tr><td>tobe_env/gateway.yaml</td><td>민감 정보를 제거한 HTTP 전용 approuting-istio Gateway와 echo 경로이며 내부 LB 메타데이터 주석과 선택적 고정 IP 주석을 포함합니다. 기존의 모든 주석을 재현하지는 않습니다.</td></tr></tbody></table><p>6개 파일은 모두 실제 원본 리소스에서 민감 정보를 제거한 복사본이지 새로 만들어 낸 추출물이 아닙니다. 대상 Gateway 이름은 일관되게 demo-istio-gw로, 테스트 호스트 이름은 echo.example.com으로 바꾸었습니다. 과거 클래스, 변환 의미 및 status 자리표시자는 경고와 함께 그대로 표시합니다. 아래의 최신 예제는 <code>spec.infrastructure.annotations</code>를 사용합니다. 기존 파일의 메타데이터 주석을 신뢰하기 전에 전파 여부를 확인하세요.</p><table><thead><tr><th>다운로드에 보존된 기존 주석 그룹</th><th>마이그레이션 결정이 필요한 값</th></tr></thead><tbody><tr><td>TLS</td><td>ssl-redirect와 force-ssl-redirect true; TLSv1.2/TLSv1.3; ECDHE-ECDSA-AES128-GCM-SHA256 및 ECDHE-RSA-AES128-GCM-SHA256; 서버 암호화 제품군 우선순위</td></tr><tr><td>HSTS</td><td>활성화됨; max-age 31536000; 하위 도메인 포함</td></tr><tr><td>라우팅</td><td>모든 경로를 /로 재작성; HTTP 백엔드; HTTP/2 요청</td></tr><tr><td>제한 시간</td><td>연결 30s; 읽기, proxy-send 및 send 120s</td></tr><tr><td>본문 및 버퍼</td><td>본문/클라이언트 제한 10m; 프록시 버퍼 16k; 요청/응답 버퍼링 켜짐; UTF-8; 클라이언트 헤더 버퍼 4k; 큰 헤더 4 × 16k</td></tr><tr><td>연결 유지</td><td>75; 업스트림 HTTP/1.1</td></tr><tr><td>CORS</td><td>예시 원본 https://app.contoso.com; GET, POST, PUT, DELETE, OPTIONS; Authorization, Content-Type, X-Custom-Header</td></tr><tr><td>쿠키 선호도</td><td>INGRESSCOOKIE, secure, 경로 /, 만료/max-age 3600</td></tr><tr><td>오류 처리</td><td>404 및 503 가로채기; error-page-svc 기본 백엔드이며 해당 매니페스트는 제공되지 않음</td></tr></tbody></table><blockquote>변환 도구는 의미적 동등성을 입증하지 않습니다. 특히 20m0s는 원본의 120초 제한 시간과 다르며 정규식 일치는 구현별로 다릅니다. nginx 클래스는 approuting-istio가 아니고 전체 경로 재작성은 접두사 제거와 다릅니다. 전환하기 전에 지원되지 않는 주석을 검토하고 허용되는 스키마, 트래픽, TLS, 클라이언트 IP 동작, 제한 시간, 버퍼 및 오류 처리를 검증하세요.</blockquote><h2 id="http-smoke-test">6. TLS에 앞서 HTTP Gateway 테스트</h2><pre><code class="language-bash">export ISTIO_RELEASE=release-1.27
+kubectl apply -f "https://raw.githubusercontent.com/istio/istio/$ISTIO_RELEASE/samples/httpbin/httpbin.yaml"</code></pre><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: httpbin-gateway
+  namespace: default
+spec:
+  gatewayClassName: approuting-istio
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces: {from: Same}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: default
+spec:
+  parentRefs:
+  - name: httpbin-gateway
+  hostnames: [httpbin.example.com]
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /get}
+    backendRefs:
+    - name: httpbin
+      port: 8000</code></pre><pre><code class="language-bash">kubectl get deployment,svc,hpa,pdb -l 'gateway.networking.k8s.io/gateway-name=httpbin-gateway'
+kubectl wait --for=condition=programmed gateway httpbin-gateway --timeout=300s
+INGRESS_HOST=$(kubectl get gateway httpbin-gateway -o jsonpath='{.status.addresses[0].value}')
+curl -s -I -H "Host: httpbin.example.com" "http://$INGRESS_HOST/get"</code></pre><p>기본값은 퍼블릭 LoadBalancer입니다. 원본 기준 구성의 예상 결과는 httpbin-gateway-approuting-istio라는 Deployment와 Service, 복제본 2개, HPA 최소 2/최대 5/CPU 80%, PDB minAvailable 1 및 HTTP 200입니다. 생성되는 이름은 &lt;gateway-name&gt;-&lt;gatewayClassName&gt; 형식을 따릅니다. DNS 호환 이름을 리소스 제한인 63자 이내로 유지하세요. 원본은 지원되는 이름 재정의 방법으로 gateway.istio.io/name-override 주석을 언급합니다.</p><h2 id="shared-gateway">7. 내부 공유 Gateway 및 네임스페이스 경계</h2><p>Gateway는 자체 데이터 플레인과 LB를 프로비전합니다. 따라서 네임스페이스마다 여러 Gateway를 만들면 IP와 프록시 Deployment도 많아집니다. gateway-system의 공유 Gateway를 사용하면 서비스 팀이 HTTPRoute를 각자의 네임스페이스에 유지하면서 하나의 진입점을 공유할 수 있습니다. 다음 고정 주소와 서브넷은 원본 환경 값이 아닌 자리표시자이므로 적용 전에 바꾸세요.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: shared-gateway
+  namespace: gateway-system
+spec:
+  infrastructure:
+    annotations:
+      service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+      service.beta.kubernetes.io/azure-load-balancer-internal-subnet: "YOUR_INGRESS_SUBNET"
+      service.beta.kubernetes.io/azure-load-balancer-ipv4: "YOUR_PRIVATE_LB_IP"
+  gatewayClassName: approuting-istio
+  listeners:
+  - name: http
+    hostname: "*.contoso.io"
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            shared-gateway: "true"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: catalog-route
+  namespace: ns-catalog
+spec:
+  parentRefs:
+  - name: shared-gateway
+    namespace: gateway-system
+  hostnames: [catalog.contoso.io]
+  rules:
+  - backendRefs:
+    - name: catalog-service
+      port: 8080</code></pre><p>네임스페이스와 백엔드 Service를 먼저 만들고 허용할 경로 네임스페이스에 <code>kubectl label namespace ns-catalog shared-gateway=true</code> 레이블을 지정하세요. 원본에는 <code>from: All</code>도 나오며 이는 모든 네임스페이스를 허용합니다. Selector는 범위를 더 좁히는 대안입니다. 모든 호스트를 수락하려면 호스트 이름을 생략하거나 *.contoso.io 같은 지원되는 와일드카드를 설정할 수 있습니다. * 단독으로는 유효한 호스트 이름 값이 아닙니다. 와일드카드는 일반적으로 최상위 도메인을 제외합니다.</p><p>HTTPRoute → Gateway 연결에는 ReferenceGrant가 아닌 리스너의 allowedRoutes가 필요합니다. 다른 네임스페이스의 Service를 참조하는 경로에는 대상 네임스페이스의 ReferenceGrant가 필요합니다. 다른 곳의 Secret을 참조하는 Gateway도 마찬가지로 명시적인 대상 네임스페이스 권한이 필요합니다. 경로와 같은 네임스페이스의 백엔드 Service에는 네임스페이스 간 권한 부여가 필요하지 않습니다. 이러한 API 권한 중 어느 것도 NetworkPolicy를 대체하지 않습니다.</p><h2 id="customization">8. 지원되는 ConfigMap을 통한 생성 리소스 사용자 지정</h2><p>생성된 Deployment, Service, HPA 또는 PDB 리소스를 직접 편집하고 변경 사항이 유지되리라 기대하지 마세요. 지원되는 사용자 지정 경로는 ConfigMap의 data 키 deployment, service, horizontalPodAutoscaler 및 podDisruptionBudget 아래에 YAML 문자열을 사용하는 것입니다.</p><table><thead><tr><th>범위</th><th>위치</th><th>우선순위</th></tr></thead><tbody><tr><td>GatewayClass 기본값</td><td>aks-istio-system/istio-gateway-class-defaults</td><td>모든 approuting-istio Gateway에 적용됩니다. 기존 관리형 ConfigMap을 편집하고 gateway.istio.io/defaults-for-class=approuting-istio를 유지하세요.</td></tr><tr><td>개별 Gateway 재정의</td><td>Gateway 네임스페이스에 있으며 spec.infrastructure.parametersRef에서 참조하는 ConfigMap</td><td>해당 Gateway에 대해 일치하는 클래스 기본값 필드를 재정의</td></tr></tbody></table><pre><code class="language-bash">kubectl edit cm istio-gateway-class-defaults -n aks-istio-system</code></pre><pre><code class="language-yaml">data:
+  deployment: |
+    metadata:
+      labels:
+        owner: platform-team
+    spec:
+      minReadySeconds: 15
+  horizontalPodAutoscaler: |
+    spec:
+      minReplicas: 3
+      maxReplicas: 6
+  podDisruptionBudget: |
+    spec:
+      minAvailable: 1</code></pre><table><thead><tr><th>생성 리소스</th><th>원본 허용 목록의 주요 항목</th></tr></thead><tbody><tr><td>Deployment</td><td>레이블/주석; replicas; minReadySeconds(v20260428에서 추가); Pod 레이블/주석; nodeSelector/nodeName/tolerations; 노드/Pod/반선호도; topologySpreadConstraints; 컨테이너 리소스 요청/제한 및 resizePolicy</td></tr><tr><td>Service</td><td>레이블/주석; type; loadBalancerSourceRanges; loadBalancerClass; externalTrafficPolicy 및 internalTrafficPolicy</td></tr><tr><td>HPA</td><td>최소 2인 minReplicas; maxReplicas; metrics; stabilizationWindowSeconds, selectPolicy 및 policies를 포함한 scaleUp/scaleDown 동작</td></tr><tr><td>PDB</td><td>minAvailable 및 unhealthyPodEvictionPolicy</td></tr></tbody></table><p>지원되지 않는 필드는 관리형 웹후크가 거부합니다. 이는 요약이며 현재 공식 허용 목록을 대체하지 않습니다. 필요한 축출을 막는 PDB는 UpgradeFailed/PodDrainFailure를 유발할 수 있습니다. 복제본 수, 분산 및 중단 요구 사항을 함께 설정하세요.</p><pre><code class="language-yaml">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: httpbin-gw-options
+  namespace: default
+data:
+  horizontalPodAutoscaler: |
+    spec:
+      minReplicas: 2
+      maxReplicas: 4
+  deployment: |
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            workload: ingress
+          tolerations:
+          - key: ingress-only
+            operator: Exists
+            effect: NoSchedule
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: httpbin-gateway
+  namespace: default
+spec:
+  gatewayClassName: approuting-istio
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: ConfigMap
+      name: httpbin-gw-options
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces: {from: Same}</code></pre><pre><code class="language-bash">kubectl get hpa httpbin-gateway-approuting-istio
+# Expect MINPODS 2 and MAXPODS 4.</code></pre><p>지원되는 LB 동작에는 infrastructure 주석을, 운영상 Pod/Service/HPA/PDB 설정에는 ConfigMap을, 애플리케이션 라우팅에는 HTTPRoute를 사용하세요. 노드 배치 요구 사항을 추가하기 전에 적절한 레이블/taint가 있는 노드가 있는지 확인하세요.</p><h2 id="logging-client-ip">9. 액세스 로그 및 원래 클라이언트 IP</h2><p>원본은 미리 보기 시기의 액세스 로그 누락 문제가 GA 테스트에서 해결되었다고 보고합니다. Istio 1.29.2-1에서 추가 구성 없이 Envoy JSON 액세스 로그가 stdout에 나타났습니다. 이는 해당 빌드에 대한 관찰이며 모든 환경에 대한 설명은 아닙니다.</p><pre><code class="language-bash">kubectl get pods -n demo -l 'gateway.networking.k8s.io/gateway-name=demo-istio-gw'
+kubectl logs -n demo "YOUR_GATEWAY_POD" --tail=50</code></pre><table><thead><tr><th>필드</th><th>해석</th></tr></thead><tbody><tr><td>authority</td><td>Host 헤더/가상 호스트</td></tr><tr><td>method, path, protocol</td><td>요청 행</td></tr><tr><td>response_code, response_flags</td><td>상태 및 Envoy 진단 플래그. -는 플래그 없음을 뜻하며 UH/UF는 실패 범주를 나타냄</td></tr><tr><td>route_name</td><td>네임스페이스, 경로 및 규칙 인덱스</td></tr><tr><td>upstream_cluster, upstream_host</td><td>선택된 백엔드 클러스터 및 Pod 엔드포인트</td></tr><tr><td>upstream_service_time, duration</td><td>백엔드 및 총 처리 시간(밀리초)</td></tr><tr><td>bytes_received, bytes_sent</td><td>페이로드 사용량</td></tr><tr><td>x_forwarded_for, downstream_remote_address</td><td>전달 경로 및 관찰된 피어</td></tr><tr><td>request_id, start_time, user_agent</td><td>상관관계, 타임스탬프 및 호출자 메타데이터</td></tr></tbody></table><p>원래 성공 예제는 HTTP 200, 백엔드/총 소요 시간 10 ms, 수신 0바이트 및 송신 1946바이트였습니다. 실제 주소, 요청 ID 및 환경 이름은 생략했습니다. Container Insights/Log Analytics, Fluent Bit/Loki 또는 기존 로깅 인프라로 stdout을 수집하고 KQL/LogQL로 JSON을 파싱하세요. 형식 변경을 시도하기 전에 사용자 지정 허용 목록을 확인하세요.</p><p>externalTrafficPolicy=Cluster에서는 SNAT 이후 관찰되는 클라이언트가 노드일 수 있습니다. 원본 IP 보존이 필요하면 클래스 수준 또는 Gateway 수준 ConfigMap으로 Local을 설정하세요.</p><pre><code class="language-yaml">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-local-options
+  namespace: demo
+data:
+  service: |
+    spec:
+      externalTrafficPolicy: Local</code></pre><p>Gateway의 infrastructure.parametersRef에서 group은 빈 값, kind는 ConfigMap, name은 gateway-local-options로 설정하여 이 ConfigMap을 참조하거나 data.service 블록을 기존 옵션 ConfigMap에 병합하세요.</p><pre><code class="language-bash">kubectl get svc -n demo -l 'gateway.networking.k8s.io/gateway-name=demo-istio-gw' \
+  -o jsonpath='{.items[0].spec.externalTrafficPolicy}'</code></pre><pre><code class="language-kusto">ContainerLogV2
+| where PodNamespace == "demo"
+| where ContainerName has "istio-proxy" or PodName has "demo-istio-gw"
+| extend log = parse_json(LogMessage)
+| project TimeGenerated,
+          x_forwarded_for = tostring(log.x_forwarded_for),
+          downstream = tostring(log.downstream_remote_address),
+          method = tostring(log.method),
+          path = tostring(log.path),
+          status = toint(log.response_code)
+| order by TimeGenerated desc</code></pre><blockquote>Local은 로컬 Gateway 엔드포인트로만 라우팅합니다. 준비된 Gateway Pod가 없는 노드를 LB 프로브가 제외하는지 확인하고, 충분한 복제본을 제공하며, 적절한 경우 토폴로지 분산을 사용하고 분산 상태를 테스트하세요. 노드별 Pod 수가 불균일하면 트래픽도 불균일할 수 있습니다. 다른 프록시 뒤에 있는 경우 전달 헤더의 신뢰와 원래 클라이언트 및 직접 연결된 피어의 구별은 여전히 중요합니다.</blockquote><h2 id="health-probe-issue">10. 과거 다중 포트 Local 상태 프로브 문제</h2><p>원본에서는 생성된 Service가 다중 포트(예: 15021+80 또는 80+443)를 사용하고 externalTrafficPolicy=Local인 경우 간헐적인 connection refused와 약 50% 성공률이 관찰되었습니다. 한 포트의 LB 프로브는 Pod가 없는 노드를 제외했지만 다른 포트는 모든 노드를 정상으로 판단하는 것처럼 보였습니다. 원본은 이를 단일 healthCheckNodePort를 둘러싼 생성 Service/프로브 연결 구성 탓으로 보았고, 제품 팀이 조사 중이며 예상 일정은 없다고 보고했습니다. 이는 빌드별 인시던트 보고서이며 모든 다중 포트 Local Service가 잘못되었다는 일반적인 Kubernetes 규칙이 아닙니다.</p><p>보고된 우회 방법은 생성 Service를 편집하는 대신 사용자 지정 ConfigMap으로 포트별 프로브 주석을 추가하는 것이었습니다. 원래 재현 사례는 빈 값을 보여주었으며 키가 존재하는 것만으로 포트 80이 성공했다고 보고했습니다.</p><pre><code class="language-yaml"># Historical reproduction only: these empty values are NOT a validated production probe configuration.
+data:
+  service: |
+    metadata:
+      annotations:
+        service.beta.kubernetes.io/port_80_health-probe_port:
+        service.beta.kubernetes.io/port_80_health-probe_protocol:
+        service.beta.kubernetes.io/port_80_health-probe_request-path:
+        service.beta.kubernetes.io/port_443_health-probe_port:
+        service.beta.kubernetes.io/port_443_health-probe_protocol:
+        service.beta.kubernetes.io/port_443_health-probe_request-path:
+    spec:
+      externalTrafficPolicy: Local</code></pre><blockquote>null 주석 값을 일반적인 해결책으로 배포하지 마세요. Service와 지원되는 Azure LB 문서에서 실제 노드 수준 프로브 포트, 프로토콜 및 경로의 유효한 문자열 값을 확인한 후 모든 프런트엔드 규칙과 노드를 테스트하세요. 원본은 동작하는 443 구성을 확립하지 못했으며 SSL connection refused는 미해결 상태였습니다. 이 문서에는 수정 예상 일정이나 검증된 443 절차가 없습니다.</blockquote><pre><code class="language-bash">export GATEWAY_NAMESPACE="YOUR_GATEWAY_NAMESPACE"
+export GATEWAY_NAME="YOUR_GATEWAY_NAME"
+export NODE_RESOURCE_GROUP="YOUR_NODE_RESOURCE_GROUP"
+kubectl get svc -n "$GATEWAY_NAMESPACE" \
+  -l "gateway.networking.k8s.io/gateway-name=$GATEWAY_NAME" -o yaml | grep -A2 health-probe
+kubectl get svc -n "$GATEWAY_NAMESPACE" \
+  -l "gateway.networking.k8s.io/gateway-name=$GATEWAY_NAME" -o yaml \
+  | grep -A30 -E 'ports:|healthCheckNodePort|externalTrafficPolicy'
+LB=$(az network lb list -g "$NODE_RESOURCE_GROUP" --query '[0].name' -o tsv)
+az network lb probe list -g "$NODE_RESOURCE_GROUP" --lb-name "$LB" -o table
+az network lb rule list -g "$NODE_RESOURCE_GROUP" --lb-name "$LB" \
+  --query '[].{rule:name,feport:frontendPort,beport:backendPort,probe:probe.id}' -o table</code></pre><p>LB가 여러 개라면 무조건 인덱스 0을 쓰지 말고 Gateway 프런트엔드를 소유한 LB를 식별하세요. 443에서만 실패하면 HTTPS 443 리스너, 올바른 certificateRefs와 Secret 네임스페이스, 성공한 CSI/운영자 동기화, Service의 443 포트와 엔드포인트, Envoy 리스너/TLS 로그, Azure 443 규칙과 프로브/백엔드 매핑을 확인하세요. 노드별 간헐적 실패와 전체 리스너/TLS 실패에는 서로 다른 진단이 필요합니다.</p><h2 id="network-policy">11. Gateway 주변의 Cilium 정책</h2><p>중앙 집중식 NGINX 컨트롤러에서는 이전에 네임스페이스 하나를 열면 되었습니다. 네임스페이스별 Gateway는 프록시 엔드포인트를 각자의 네임스페이스로 옮기므로 기존 허용 규칙이 더 이상 인그레스를 포괄하지 못할 수 있습니다. 표준 NetworkPolicy는 Cilium에서 동작하지만 다음 예제는 엔터티 표현을 위해 CiliumNetworkPolicy를 사용합니다. 적용 전에 실제 Gateway Pod 레이블을 확인하세요. 원본은 istio.io/gateway-name을 사용하며 생성 리소스 검사에서는 gateway.networking.k8s.io/gateway-name도 사용합니다.</p><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-ingress-to-gateway
+  namespace: demo
+spec:
+  endpointSelector:
+    matchLabels:
+      istio.io/gateway-name: demo-istio-gw
+  ingress:
+  - fromEntities: [world, cluster, health, remote-node]
+    toPorts:
+    - ports:
+      - {port: "80", protocol: TCP}
+      - {port: "443", protocol: TCP}
+      - {port: "15021", protocol: TCP}</code></pre><table><thead><tr><th>엔터티</th><th>의미</th></tr></thead><tbody><tr><td>world</td><td>클러스터 외부 주소. 범위가 넓으며 애플리케이션 허용 목록이 아님</td></tr><tr><td>cluster</td><td>클러스터 엔드포인트/호스트. 내부 트래픽을 폭넓게 허용</td></tr><tr><td>host</td><td>엔드포인트의 로컬 노드</td></tr><tr><td>remote-node</td><td>일부 SNAT/프로브 경로를 포함한 다른 노드</td></tr><tr><td>health</td><td>Cilium 상태 엔드포인트. Azure LoadBalancer 프로브의 동의어가 아님</td></tr><tr><td>kube-apiserver</td><td>API 서버. 이 인그레스 예제에서는 필요하지 않음</td></tr></tbody></table><p>포트 80과 443은 애플리케이션 트래픽을 전달하며 15021은 Istio 상태/준비 상태 엔드포인트입니다. 광범위한 예제는 네임스페이스 격리보다 더 많은 접근을 허용합니다. 더 좁은 모델을 위해 원본은 퍼블릭 트래픽, 상태 트래픽 및 승인된 네임스페이스를 구분합니다. 다음 예제는 로컬 노드의 상태 트래픽 허용을 명시합니다.</p><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: restricted-ingress-to-gateway
+  namespace: demo
+spec:
+  endpointSelector:
+    matchLabels:
+      istio.io/gateway-name: demo-istio-gw
+  ingress:
+  - fromEntities: [world]
+    toPorts:
+    - ports:
+      - {port: "80", protocol: TCP}
+      - {port: "443", protocol: TCP}
+  - fromEntities: [host, remote-node, health]
+    toPorts:
+    - ports:
+      - {port: "15021", protocol: TCP}
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: frontend-allowed
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: another-allowed
+    toPorts:
+    - ports:
+      - {port: "80", protocol: TCP}
+      - {port: "443", protocol: TCP}</code></pre><blockquote>광범위한 예제와 좁은 범위의 예제는 대안으로 사용하세요. Cilium 허용 정책은 합산되므로 광범위한 규칙을 설치한 채 두면 좁은 규칙의 효과가 사라집니다. externalTrafficPolicy=Cluster에서는 SNAT 이후 외부 트래픽이 remote-node로 보일 수 있습니다. 따라서 80/443에서 remote-node를 차단하면 외부 접근이 중단될 수 있습니다. 먼저 Local과 그 상태 프로브를 검증한 후 원본 범위를 좁히세요. 이 템플릿이 모든 AKS 네트워크 경로에 맞는다고 가정하지 말고 실제 프로브 원본 ID와 포트 변환을 확인하세요.</blockquote><p>확장 가능한 네임스페이스 구성을 위해 승인된 네임스페이스에 레이블을 지정하되, 정규화되지 않은 Pod 레이블이 아닌 Cilium의 네임스페이스 레이블 표현을 사용하세요. 원본에는 정규화되지 않은 access-to-demo-gw 선택자가 있습니다. 엔드포인트 ID를 확인하고 해당 버전에 맞게 올바르게 정규화된 키를 사용하세요.</p><pre><code class="language-bash">kubectl label ns frontend-allowed access-to-demo-gw=true
+kubectl label ns another-allowed access-to-demo-gw=true</code></pre><pre><code class="language-yaml">fromEndpoints:
+- matchLabels:
+    k8s:io.cilium.k8s.namespace.labels.access-to-demo-gw: "true"</code></pre><pre><code class="language-bash">kubectl exec -n kube-system ds/cilium -- cilium monitor --type drop | grep "YOUR_GATEWAY_POD_IP"
+kubectl exec -n kube-system ds/cilium -- cilium endpoint list | grep demo</code></pre><p>관련 엔드포인트가 있는 노드에서 진단을 실행하세요. DaemonSet exec는 다른 노드를 선택할 수 있습니다. 원본은 Gateway에서 백엔드로의 네임스페이스 간 정책 검증을 향후 작업으로 남겨 두었습니다. 정책으로 격리되는 경우 필요한 백엔드 인그레스, Gateway 이그레스, DNS, 상태 및 aks-istio-system과의 컨트롤 플레인 통신을 명시적으로 허용하세요. 정책은 선택한 Pod의 선택한 방향을 격리하며 네임스페이스의 모든 Pod를 자동으로 격리하지는 않습니다.</p><h2 id="operator-tls-prerequisites">12. 권장 TLS 경로: Application Routing 운영자</h2><p>운영자는 두 TLS 옵션인 <code>kubernetes.azure.com/tls-cert-keyvault-uri</code> 및 <code>kubernetes.azure.com/tls-cert-service-account</code>가 설정된 GatewayClass approuting-istio의 리스너를 감시합니다. kv-gw-cert-&lt;gateway&gt;-&lt;listener&gt;라는 SPC를 만들고 Gateway 네임스페이스의 같은 이름을 가진 kubernetes.io/tls Secret으로 CSI 동기화를 조정하며 certificateRefs를 패치합니다. 자료를 가져오는 주체는 여전히 CSI이며 운영자는 이 연결 과정을 자동화합니다. 이 경로에서는 관리자가 더미 Deployment를 유지할 필요가 없습니다.</p><ul><li>Application Routing 운영자, Application Routing Istio Gateway 구현 및 관리형 Gateway API를 모두 활성화하세요.</li><li>OIDC 발급자 및 Microsoft Entra Workload Identity를 활성화하세요.</li><li>Secrets Store CSI Driver용 Azure Key Vault 공급자를 활성화하세요.</li><li>적절한 범위의 Owner 또는 RBAC Administrator와 Managed Identity Contributor 역할 등, 역할 할당·UAMI·페더레이션 ID 자격 증명을 만들 수 있는 권한이 있어야 합니다.</li><li>기존 NGINX 사용자는 NGINX를 계속 실행하면서 Gateway 구현을 활성화할 수 있습니다. OIDC/Workload Identity는 추가로 활성화해야 할 수 있습니다.</li></ul><pre><code class="language-bash">az aks approuting enable -g "$RESOURCE_GROUP" -n "$CLUSTER" --enable-kv
+az aks approuting gateway istio enable -g "$RESOURCE_GROUP" -n "$CLUSTER"
+az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --enable-oidc-issuer --enable-workload-identity
+# Managed Gateway API must already be enabled as in section 3.
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --query 'addonProfiles.azureKeyvaultSecretsProvider.enabled'
+kubectl get pods -n kube-system -l app=secrets-store-csi-driver
+kubectl get pods -n kube-system -l app=secrets-store-provider-azure</code></pre><p>원본은 이를 만들기/업데이트 플래그 --enable-app-routing과 --enable-app-routing-istio로도 표현합니다. 두 구성 요소가 모두 필요합니다. CSI 추가 기능이 이미 활성화되어 있으면 --enable-kv를 생략할 수 있으며 중복 활성화는 멱등적인 것으로 설명되어 있습니다. 기존 --attach-kv와 --attach-zones는 아래 UAMI/Workload Identity 모델이 아닌 이전 NGINX 추가 기능 ID를 구성합니다.</p><h2 id="vault-certificate">13. 자격 증명 모음과 개발용 인증서 만들기</h2><pre><code class="language-bash">export KV_NAME="YOUR_KEY_VAULT_NAME"
+export UAMI_NAME="YOUR_MANAGED_IDENTITY_NAME"
+az keyvault create --name "$KV_NAME" --resource-group "$RESOURCE_GROUP" \
+  --location "$LOCATION" --enable-rbac-authorization true --enable-purge-protection true
+az keyvault show --name "$KV_NAME" --resource-group "$RESOURCE_GROUP" \
+  --query 'properties.{rbac:enableRbacAuthorization,uri:vaultUri}'</code></pre><p>전역적으로 고유하고 유효한 자격 증명 모음 이름을 선택하세요. 프로덕션에는 제거 보호가 권장되며 보존 기간 중 조기 영구 삭제를 막습니다. 인증서 작성자는 Key Vault Certificates Officer 또는 적절한 관리자 역할이 필요합니다. 배포 소유권만으로 데이터 플레인 접근 권한이 자동 부여되지는 않습니다.</p><pre><code class="language-bash">cat &gt; cert-policy.json &lt;&lt;'EOF'
+{
+  "issuerParameters": {"name": "Self"},
+  "keyProperties": {"exportable": true, "keyType": "RSA", "keySize": 2048, "reuseKey": false},
+  "secretProperties": {"contentType": "application/x-pkcs12"},
+  "x509CertificateProperties": {
+    "subject": "CN=*.example.com",
+    "subjectAlternativeNames": {"dnsNames": ["*.example.com", "example.com"]},
+    "validityInMonths": 12,
+    "keyUsage": ["digitalSignature", "keyEncipherment"]
+  }
+}
+EOF
+az keyvault certificate create --vault-name "$KV_NAME" \
+  --name approuting-demo-cert --policy @cert-policy.json
+export CERT_URI=$(az keyvault certificate show --vault-name "$KV_NAME" \
+  --name approuting-demo-cert --query id -o tsv | sed 's|/[^/]*$||')</code></pre><p>이 자체 서명 인증서는 테스트 전용입니다. 프로덕션에는 <code>az keyvault certificate import</code>를 사용하여 신뢰할 수 있는 CA 발급 인증서를 가져오세요. 통합이 새 버전을 추적할 수 있도록 구조가 <code>https://YOUR_KEY_VAULT_NAME.vault.azure.net/certificates/YOUR_CERTIFICATE_NAME</code>인 버전 없는 certificates URI를 사용하세요.</p><h2 id="workload-identity">14. ServiceAccount를 자격 증명 모음 ID에 연결</h2><pre><code class="language-bash">az identity create --resource-group "$RESOURCE_GROUP" --name "$UAMI_NAME" --location "$LOCATION"
+export UAMI_CLIENT_ID=$(az identity show -g "$RESOURCE_GROUP" -n "$UAMI_NAME" --query clientId -o tsv)
+export UAMI_PRINCIPAL_ID=$(az identity show -g "$RESOURCE_GROUP" -n "$UAMI_NAME" --query principalId -o tsv)
+az role assignment create --assignee-object-id "$UAMI_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal --role "Key Vault Secrets User" \
+  --scope "$(az keyvault show --name "$KV_NAME" --query id -o tsv)"
+export OIDC_ISSUER=$(az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" --query oidcIssuerProfile.issuerUrl -o tsv)
+export SA_NAME=approuting-demo-sa
+for ns in app-a app-b; do
+  kubectl create namespace "$ns"
+  az identity federated-credential create --identity-name "$UAMI_NAME" \
+    --resource-group "$RESOURCE_GROUP" --name "approuting-demo-fic-$ns" \
+    --issuer "$OIDC_ISSUER" --subject "system:serviceaccount:$ns:$SA_NAME" \
+    --audiences "api://AzureADTokenExchange"
+  kubectl apply -n "$ns" -f - &lt;&lt;EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: $SA_NAME
+  annotations:
+    azure.workload.identity/client-id: $UAMI_CLIENT_ID
+  labels:
+    azure.workload.identity/use: "true"
+EOF
+done</code></pre><p>TLS 동기화 ID에는 Key Vault Secrets User가 필요합니다. 개인 키를 포함하는 인증서 자료를 자격 증명 모음의 secret 인터페이스로 가져오기 때문입니다. 정확한 issuer, subject 및 audience를 사용하여 네임스페이스/ServiceAccount 쌍마다 페더레이션 자격 증명을 만들어야 합니다. ID/RBAC가 전파될 시간을 허용하세요. 원본에서는 보통 1–3분 대기가 관찰되었습니다.</p><blockquote>원본은 ServiceAccount에 azure.workload.identity/use=true를 지정하고 이를 토큰 주입 구성으로 설명합니다. 일반적인 Workload Identity 변이는 ServiceAccount 레이블만이 아니라 이를 사용하는 Pod에서 트리거됩니다. 이 통합에서는 운영자가 소비 리소스를 관리합니다. 페더레이션이 실패하면 생성된 워크로드/토큰 연결 구성과 현재 공식 요구 사항을 확인하세요. SA 레이블만으로 임의의 애플리케이션 Pod에 토큰이 주입된다고 가정하지 마세요.</blockquote><h3>공유 Gateway ID 범위</h3><p>Gateway가 gateway-system에만 있고 HTTPRoute가 여러 서비스 네임스페이스에 있으면 ServiceAccount, FIC 및 TLS 구성은 gateway-system에만 만드세요. 운영자가 생성하는 SPC와 Secret도 그곳에 있습니다. HTTPRoute만 포함하는 서비스 네임스페이스에는 인증서 ID를 중복 생성할 필요가 없습니다. allowedRoutes를 All 또는 제한된 Selector로 설정하고 네임스페이스 간 parentRefs를 사용하세요. 이러한 경로-Gateway 연결이나 같은 네임스페이스의 Secret에는 ReferenceGrant가 필요하지 않습니다.</p><h2 id="operator-listener">15. 운영자 관리형 HTTPS 리스너 활성화</h2><pre><code class="language-bash">for ns in app-a app-b; do
+  kubectl apply -n "$ns" -f https://raw.githubusercontent.com/istio/istio/release-1.27/samples/httpbin/httpbin.yaml
+done
+for pair in "app-a:a" "app-b:b"; do
+  ns=${pair%%:*}
+  sub=${pair##*:}
+  fqdn=${sub}.example.com
+  kubectl apply -n "$ns" -f - &lt;&lt;EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ${sub}-gateway
+  labels:
+    app: approuting-demo
+    zone: ${sub}
+spec:
+  gatewayClassName: approuting-istio
+  listeners:
+  - name: https
+    hostname: $fqdn
+    port: 443
+    protocol: HTTPS
+    tls:
+      mode: Terminate
+      options:
+        kubernetes.azure.com/tls-cert-keyvault-uri: $CERT_URI
+        kubernetes.azure.com/tls-cert-service-account: $SA_NAME
+    allowedRoutes:
+      namespaces: {from: Same}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${sub}-route
+spec:
+  parentRefs:
+  - name: ${sub}-gateway
+  hostnames: ["$fqdn"]
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /get}
+    backendRefs:
+    - name: httpbin
+      port: 8000
+EOF
+done
+kubectl wait -n app-a --for=condition=programmed gateway a-gateway --timeout=300s
+kubectl wait -n app-b --for=condition=programmed gateway b-gateway --timeout=300s
+kubectl get secretproviderclass,secret -n app-a
+kubectl get secretproviderclass,secret -n app-b</code></pre><p>app-a의 예상 결과는 SPC와 TLS Secret kv-gw-cert-a-gateway-https이며 Secret에는 데이터 항목 2개가 있습니다. app-b는 이에 대응하는 b-gateway 이름을 사용합니다. certificateRefs를 수동으로 관리하여 운영자와 경합하지 마세요.</p><pre><code class="language-bash">GATEWAY_IP=$(kubectl get -n app-a gateway a-gateway -o jsonpath='{.status.addresses[0].value}')
+# Self-signed lab only: -k bypasses server certificate verification.
+curl -k -I --resolve "a.example.com:443:${GATEWAY_IP}" "https://a.example.com/get"
+# For trusted certificates, omit -k or use --cacert YOUR_CA_CHAIN_FILE.</code></pre><p>원본의 성공 테스트는 동기화된 인증서로 HTTP/2 200을 기대합니다. --resolve는 TLS SNI와 Host를 유지하면서 테스트에서 DNS 위임을 우회합니다.</p><h2 id="tls-rotation">16. 인증서 회전 및 문제 해결</h2><pre><code class="language-bash">az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --enable-secret-rotation --rotation-poll-interval 2m
+az keyvault certificate create --vault-name "$KV_NAME" \
+  --name approuting-demo-cert --policy @cert-policy.json
+az keyvault certificate show --vault-name "$KV_NAME" --name approuting-demo-cert \
+  --query x509ThumbprintHex -o tsv
+kubectl -n app-a get secret kv-gw-cert-a-gateway-https -o jsonpath='{.data.tls\.crt}' \
+  | base64 -d | openssl x509 -noout -fingerprint -sha1</code></pre><p>버전 없는 URI를 사용하고 회전을 활성화하세요. 원본은 다음 폴링 시 Secret과 Envoy 구성이 갱신될 것으로 예상합니다. 지문을 비교할 때 콜론 구분자와 대소문자를 정규화하고 새 TLS 연결에서 실제 제공되는 인증서도 확인하세요. Secret 지문만으로는 실제 리스너가 업데이트되었다고 입증할 수 없습니다. 자격 증명 모음 제한을 유발할 수 있는 지나치게 짧은 간격은 피하세요.</p><table><thead><tr><th>증상</th><th>확인 사항</th></tr></thead><tbody><tr><td>Programmed False; SPC/Secret 없음</td><td>운영자와 Gateway 구현이 모두 활성화되었는지, GatewayClass와 두 TLS 옵션 키가 올바른지 확인</td></tr><tr><td>마운트/권한 실패</td><td>UAMI에 올바른 범위의 Key Vault Secrets User가 있는지 확인하고 전파를 기다리며 자격 증명 모음 네트워크 접근 확인</td></tr><tr><td>SPC는 있지만 Secret 없음</td><td>FIC issuer/subject/audience, 네임스페이스/SA 이름, client-id 주석 및 생성된 소비 워크로드 ID 확인</td></tr><tr><td>이전 인증서가 남아 있음</td><td>버전 없는 URI, 회전 활성화, 운영자/CSI 상태, 갱신된 Secret 및 실제 TLS 핸드셰이크 확인</td></tr><tr><td>다른 GatewayClass</td><td>이 원본의 운영자 통합은 메시 GatewayClass가 아닌 approuting-istio만 지원</td></tr></tbody></table><h2 id="manual-tls">17. 과거 대체 경로: 수동 CSI 동기화</h2><p>운영자 통합을 사용할 수 없거나 의도적으로 중앙 집중식 인증서 저장소 설계가 필요한 경우에만 이 별도 경로를 사용하세요. 초기 수동 모델에서는 SPC 선언만으로 동기화가 시작되지 않습니다. Envoy는 해당 SPC를 마운트하는 것이 아니라 컨트롤 플레인/API 구성을 통해 Kubernetes Secret을 사용합니다. 지속적으로 마운트된 CSI 볼륨이 동기화 트리거를 제공합니다. 업데이트된 운영자 경로에서는 관리자가 마운트 유지 리소스를 만들 필요가 없습니다.</p><h3>CSI 활성화 및 ID 권한 부여</h3><pre><code class="language-bash">export AKV_NAME="$KV_NAME"
+export APP_NS=demo
+az aks enable-addons --addons azure-keyvault-secrets-provider \
+  --resource-group "$RESOURCE_GROUP" --name "$CLUSTER"
+CLIENT_ID=$(az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --query 'addonProfiles.azureKeyvaultSecretsProvider.identity.clientId' -o tsv | tr -d '\r')
+OBJECT_ID=$(az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --query 'addonProfiles.azureKeyvaultSecretsProvider.identity.objectId' -o tsv | tr -d '\r')
+TENANT_ID=$(az keyvault show -g "$RESOURCE_GROUP" -n "$AKV_NAME" --query properties.tenantId -o tsv | tr -d '\r')
+AKV_SCOPE=$(az keyvault show -g "$RESOURCE_GROUP" -n "$AKV_NAME" --query id -o tsv | tr -d '\r')
+az role assignment create --role "Key Vault Secrets User" \
+  --assignee-object-id "$OBJECT_ID" --assignee-principal-type ServicePrincipal --scope "$AKV_SCOPE"
+# Optional certificate access: validate role availability and data actions for your operation.
+az role assignment create --role "Key Vault Certificate User" \
+  --assignee-object-id "$OBJECT_ID" --assignee-principal-type ServicePrincipal --scope "$AKV_SCOPE"</code></pre><p>이 ID는 CSI 추가 기능이 자동 생성한 사용자 할당 ID이며 운영자 경로의 명시적 UAMI/FIC가 아닙니다. 자격 증명 모음이 기존 액세스 정책 모델을 사용한다면 <code>az keyvault set-policy --name "$AKV_NAME" --object-id "$OBJECT_ID" --secret-permissions get list --certificate-permissions get list</code>를 통해 secret get/list 및 certificate get/list를 허용하세요. RBAC와 액세스 정책의 전제를 혼동하지 마세요.</p><pre><code class="language-bash"># The person importing certificates/secrets also needs appropriate data-plane roles.
+ME_OBJECT_ID=$(az ad signed-in-user show --query id -o tsv)
+az role assignment create --role "Key Vault Certificates Officer" \
+  --assignee-object-id "$ME_OBJECT_ID" --assignee-principal-type User --scope "$AKV_SCOPE"
+az role assignment create --role "Key Vault Secrets Officer" \
+  --assignee-object-id "$ME_OBJECT_ID" --assignee-principal-type User --scope "$AKV_SCOPE"
+kubectl create namespace "$APP_NS" --dry-run=client -o yaml | kubectl apply -f -</code></pre><h3>개발용 인증서 및 두 가지 저장 방식</h3><p>수동 원본은 OpenSSL로 유효 기간 365일의 RSA-2048 테스트 루트 및 서버 인증서를 만듭니다. 원본 서버 인증서에는 SAN이 없으므로 다음 예제는 호스트 이름 검증이 가능하도록 SAN을 명시적으로 추가합니다. 개인 키는 로컬 테스트 자료입니다. 커밋하거나 내용을 공개하지 마세요.</p><pre><code class="language-bash">mkdir -p httpbin_certs
+openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 \
+  -subj '/O=example Inc./CN=example.com' \
+  -keyout httpbin_certs/example.com.key -out httpbin_certs/example.com.crt
+openssl req -out httpbin_certs/httpbin.example.com.csr -newkey rsa:2048 -nodes \
+  -keyout httpbin_certs/httpbin.example.com.key \
+  -subj '/CN=httpbin.example.com/O=httpbin organization'
+printf 'subjectAltName=DNS:httpbin.example.com\n' &gt; httpbin_certs/server.ext
+openssl x509 -req -sha256 -days 365 -CA httpbin_certs/example.com.crt \
+  -CAkey httpbin_certs/example.com.key -set_serial 0 \
+  -in httpbin_certs/httpbin.example.com.csr -out httpbin_certs/httpbin.example.com.crt \
+  -extfile httpbin_certs/server.ext
+
+# A: store separate PEM key and certificate secrets.
+az keyvault secret set --vault-name "$AKV_NAME" --name test-httpbin-key --file httpbin_certs/httpbin.example.com.key
+az keyvault secret set --vault-name "$AKV_NAME" --name test-httpbin-crt --file httpbin_certs/httpbin.example.com.crt
+
+# B: combine into a PFX and import a certificate object.
+# OpenSSL prompts for an export password; do not put real passwords into a published script.
+openssl pkcs12 -export -inkey httpbin_certs/httpbin.example.com.key \
+  -in httpbin_certs/httpbin.example.com.crt -out httpbin_certs/httpbin.example.com.pfx
+az keyvault certificate import --vault-name "$AKV_NAME" \
+  --name test-httpbin-cert-pfx --file httpbin_certs/httpbin.example.com.pfx \
+  --password "$YOUR_PFX_PASSWORD"</code></pre><blockquote>원본 PFX 내보내기/가져오기 블록에는 이미 마스킹되었거나 손상된 행이 있습니다. 숨겨진 내용은 복원하지 않았습니다. 위의 두 명시적 명령은 호출자가 제공하는 암호 변수로 의도된 작업을 표현합니다. 인증서 객체로 저장하면 Key Vault 인증서 메타데이터, 만료 모니터링 및 회전을 사용할 수 있습니다. 공급자가 지원하는 개인 키 인코딩을 선택하세요.</blockquote><h3>별도의 PEM 비밀 2개를 위한 SPC</h3><p>적용하기 전에 이 YAML의 셸 변수를 치환하세요. kubectl은 파일 안의 변수를 확장하지 않습니다. 마운트된 객체 별칭과 secretObjects의 objectName 값이 일치해야 합니다.</p><pre><code class="language-yaml">apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: httpbin-credential-spc
+  namespace: demo
+spec:
+  provider: azure
+  secretObjects:
+  - secretName: httpbin-credential
+    type: kubernetes.io/tls
+    data:
+    - objectName: test-httpbin-key
+      key: tls.key
+    - objectName: test-httpbin-crt
+      key: tls.crt
+  parameters:
+    useVMManagedIdentity: "true"
+    userAssignedIdentityID: "$CLIENT_ID"
+    keyvaultName: "$AKV_NAME"
+    cloudName: ""
+    objects: |
+      array:
+        - |
+          objectName: test-httpbin-key
+          objectType: secret
+          objectAlias: test-httpbin-key
+        - |
+          objectName: test-httpbin-crt
+          objectType: secret
+          objectAlias: test-httpbin-crt
+    tenantId: "$TENANT_ID"</code></pre><h3>원본의 인증서 객체 변형</h3><p>수동 문서는 같은 Secret 별칭 매핑을 유지하면서 objects 배열을 다음과 같이 바꿉니다.</p><pre><code class="language-yaml">objects: |
+  array:
+    - |
+      objectName: test-httpbin-cert-pfx
+      objectType: secret
+      objectAlias: test-httpbin-key
+    - |
+      objectName: test-httpbin-cert-pfx
+      objectType: cert
+      objectAlias: test-httpbin-crt</code></pre><blockquote>이 별칭 패턴은 원본 지침으로 보존한 것이며 원시 PFX 비밀이 자동으로 유효한 tls.key로 변환된다는 증거가 아닙니다. objectAlias는 마운트된 내용의 이름을 바꿉니다. 인증서/개인 키 형식은 공급자와 객체 형식에 따라 다릅니다. 사용하기 전에 설치된 공급자에서 tls.crt에 PEM 인증서가, tls.key에 일치하는 PEM 개인 키가 들어 있는지 검증하세요. 모든 objectType=cert 작업이 secret API를 사용한다고 가정하지 마세요. 인증서 검색과 개인 키를 포함한 비밀 검색은 권한 및 형식 의미가 서로 다릅니다. 원본의 포괄적 주장은 지나치게 일반화되어 있습니다.</blockquote><p>최신 자료를 추적하려면 objectVersion을 생략하세요. 이를 설정하면 해당 객체 버전으로 고정되어 새 버전으로의 자동 회전을 막습니다.</p><h2 id="manual-mount-holder">18. 수동 동기화 마운트 유지</h2><pre><code class="language-yaml">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secrets-store-sync-httpbin
+  namespace: demo
+  labels: {app: secrets-store-sync-httpbin}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: secrets-store-sync-httpbin}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels: {app: secrets-store-sync-httpbin}
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels: {app: secrets-store-sync-httpbin}
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: pause
+        image: mcr.microsoft.com/oss/kubernetes/pause:3.6
+        resources:
+          requests: {cpu: "10m", memory: "16Mi"}
+          limits: {cpu: "50m", memory: "32Mi"}
+        volumeMounts:
+        - name: secrets-store01-inline
+          mountPath: /mnt/secrets-store
+          readOnly: true
+      volumes:
+      - name: secrets-store01-inline
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: httpbin-credential-spc</code></pre><pre><code class="language-bash">kubectl -n "$APP_NS" get deploy secrets-store-sync-httpbin
+kubectl -n "$APP_NS" get pod -l app=secrets-store-sync-httpbin -o wide
+kubectl -n "$APP_NS" describe secret httpbin-credential</code></pre><p>Deployment는 축출된 Pod를 다시 만들지만 독립 Pod는 그렇지 않습니다. 선호 반선호도와 maxUnavailable=0을 사용하는 복제본 2개는 복원력을 높이지만 서로 다른 노드 배치나 모든 장애에서의 생존을 보장하지 않습니다. 실제 배치와 중단 처리를 확인하세요. 이는 적은 리소스를 사용하는 마운트 유지 리소스이지 트래픽을 처리하는 앱이 아닙니다.</p><blockquote>원본은 모든 소비자가 중지된 후에도 동기화된 Secret이 반드시 남는다고 주장합니다. 여기에 의존하지 마세요. CSI 동기화 Secret의 수명은 소비 Pod 및 가비지 수집과 연결될 수 있습니다. Secret이 일시적으로 남더라도 마운트가 없으면 회전은 중단됩니다. 수동 통합을 사용하는 내내 마운트 유지 리소스를 유지하세요.</blockquote><h3>수동 HTTPS 리스너 및 경로</h3><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: httpbin-gateway
+  namespace: demo
+spec:
+  gatewayClassName: approuting-istio
+  listeners:
+  - name: https
+    hostname: httpbin.example.com
+    port: 443
+    protocol: HTTPS
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: httpbin-credential
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            kubernetes.io/metadata.name: demo
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: demo
+spec:
+  parentRefs:
+  - name: httpbin-gateway
+  hostnames: [httpbin.example.com]
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /status}
+    - path: {type: PathPrefix, value: /delay}
+    backendRefs:
+    - name: httpbin
+      port: 8000</code></pre><pre><code class="language-bash">kubectl apply -n "$APP_NS" -f https://raw.githubusercontent.com/istio/istio/release-1.27/samples/httpbin/httpbin.yaml
+kubectl wait -n "$APP_NS" --for=condition=programmed gateway httpbin-gateway --timeout=300s
+INGRESS_HOST=$(kubectl get -n "$APP_NS" gateway httpbin-gateway -o jsonpath='{.status.addresses[0].value}')
+SECURE_INGRESS_PORT=$(kubectl get -n "$APP_NS" gateway httpbin-gateway -o jsonpath='{.spec.listeners[?(@.name=="https")].port}')
+curl -v --resolve "httpbin.example.com:$SECURE_INGRESS_PORT:$INGRESS_HOST" \
+  --cacert httpbin_certs/example.com.crt \
+  "https://httpbin.example.com:$SECURE_INGRESS_PORT/status/418"</code></pre><p>예상 응답은 HTTP/2 418이며 이는 httpbin 테스트 상태이지 라우팅 실패가 아닙니다. certificateRefs.name은 secretObjects.secretName과 같아야 합니다. 앞에서 설명한 동일한 2분 회전 옵션을 활성화하고 새 인증서 버전을 업로드하세요. key/crt 비밀이 분리된 경우 일치하는 쌍을 업데이트하세요. 키가 다른 새 인증서만 업로드하면 TLS가 중단됩니다. 자격 증명 모음 지문, Secret 인증서 지문 및 실제 제공되는 TLS 인증서를 비교하세요. 로그는 핸드셰이크 진단에 도움이 되지만 그 자체로 지문의 증거는 아닙니다.</p><h2 id="central-cert-store">19. 중앙 인증서 저장소 및 테넌트 격리</h2><p>수동 Gateway별 패턴에서 모든 네임스페이스에 SPC와 동기화 Pod를 배치하면 유지 관리가 중복됩니다. 대안은 cert-store에 SPC 1개, 복제본 2개의 동기화 Deployment 1개 및 하나 이상의 TLS Secret을 두고 다른 네임스페이스의 Gateway가 해당 Secret을 참조하도록 명시적인 ReferenceGrant를 부여하는 것입니다. 이는 단일 공유 Gateway와 다릅니다. 여기서는 여러 Gateway가 중앙 집중식 인증서를 재사용합니다.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: gw-can-read-tls-secret
+  namespace: cert-store
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    namespace: tenant-a
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    namespace: tenant-b
+  to:
+  - group: ""
+    kind: Secret
+    name: httpbin-credential</code></pre><pre><code class="language-yaml"># Listener fragment on a Gateway in tenant-a or tenant-b:
+tls:
+  mode: Terminate
+  certificateRefs:
+  - kind: Secret
+    namespace: cert-store
+    name: httpbin-credential</code></pre><p>대상 네임스페이스의 권한이 없으면 원본에서는 ResolvedRefs=False, RefNotPermitted와 함께 해당 리스너가 프로그래밍되지 않았다고 보고합니다. 같은 네임스페이스의 다른 참조/리스너까지 실패하는 것은 아닙니다. 전체 Pod가 잘못되었다고 보지 말고 실제 리스너 조건을 확인하세요.</p><pre><code class="language-bash">kubectl describe gateway "YOUR_GATEWAY_NAME" -n "YOUR_APP_NAMESPACE"
+kubectl get gateway "YOUR_GATEWAY_NAME" -n "YOUR_APP_NAMESPACE" \
+  -o jsonpath='{.status.listeners[*].conditions[?(@.type=="ResolvedRefs")]}'</code></pre><h3>하나의 자격 증명 모음, 여러 인증서</h3><p>SPC의 objects와 secretObjects는 모두 배열입니다. 원본의 인증서 2개 예제를 재현하려면 위와 같은 ID/자격 증명 모음/테넌트 필드로 cert-store에 SPC all-tls-spc를 만들고 다음 객체 별칭과 Secret 매핑을 사용하세요. 17절의 인증서 객체 형식 주의 사항은 여전히 적용됩니다.</p><pre><code class="language-yaml"># spec.parameters.objects fragment:
+objects: |
+  array:
+    - |
+      objectName: tenant-a-cert-pfx
+      objectType: secret
+      objectAlias: tenant-a-key
+    - |
+      objectName: tenant-a-cert-pfx
+      objectType: cert
+      objectAlias: tenant-a-crt
+    - |
+      objectName: tenant-b-cert-pfx
+      objectType: secret
+      objectAlias: tenant-b-key
+    - |
+      objectName: tenant-b-cert-pfx
+      objectType: cert
+      objectAlias: tenant-b-crt
+# Corresponding spec.secretObjects:
+secretObjects:
+- secretName: tls-tenant-a
+  type: kubernetes.io/tls
+  data:
+  - {objectName: tenant-a-crt, key: tls.crt}
+  - {objectName: tenant-a-key, key: tls.key}
+- secretName: tls-tenant-b
+  type: kubernetes.io/tls
+  data:
+  - {objectName: tenant-b-crt, key: tls.crt}
+  - {objectName: tenant-b-key, key: tls.key}</code></pre><p>동기화 Deployment를 cert-store로 이동하고 secretProviderClass를 all-tls-spc로 바꾸세요. 그러면 마운트된 볼륨 하나가 해당 SPC의 객체를 포괄합니다. 각 Gateway는 cert-store에서 자신이 사용할 TLS Secret을 참조합니다.</p><blockquote>ReferenceGrant 권한은 from[]과 to[]의 데카르트 곱입니다. tenant-a, tenant-b 및 두 TLS Secret을 하나의 권한 부여에 넣으면 각 테넌트가 두 Secret을 모두 참조할 수 있습니다. 테넌트 격리를 위해 승인된 네임스페이스/Secret 쌍마다 권한 부여를 하나씩 만드세요. 네임스페이스 권한 부여는 특정 이름의 Gateway 하나가 아니라 해당 네임스페이스의 Gateway 전반에 권한을 부여합니다.</blockquote><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: tenant-a-to-own-certificate
+  namespace: cert-store
+spec:
+  from:
+  - {group: gateway.networking.k8s.io, kind: Gateway, namespace: tenant-a}
+  to:
+  - {group: "", kind: Secret, name: tls-tenant-a}
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: tenant-b-to-own-certificate
+  namespace: cert-store
+spec:
+  from:
+  - {group: gateway.networking.k8s.io, kind: Gateway, namespace: tenant-b}
+  to:
+  - {group: "", kind: Secret, name: tls-tenant-b}</code></pre><p>의도적으로 모든 테넌트가 모든 인증서를 사용하도록 허용한다면 광범위한 권한 부여 하나가 더 단순하지만 격리는 약합니다. 새 격리 테넌트마다 인증서 객체, Secret 매핑 및 쌍별 권한 부여를 추가하세요. 인증서가 서로 다른 자격 증명 모음에 속하거나(keyvaultName은 SPC별 설정), 객체 수가 많아 폴링/제한 부담이 생기거나, 소유권/변경 주기상 장애 영향을 줄여야 하면 SPC를 나누세요.</p><p>여러 SPC가 하나의 동기화 Deployment를 공유할 수도 있습니다. SPC마다 CSI 볼륨 하나와 대응하는 volumeMounts를 마운트하세요. 원본에서 볼륨만 보여주는 개략적인 구성은 다음과 같습니다.</p><pre><code class="language-yaml">volumes:
+- name: cert-a
+  csi:
+    driver: secrets-store.csi.k8s.io
+    readOnly: true
+    volumeAttributes: {secretProviderClass: spc-cert-a}
+- name: cert-b
+  csi:
+    driver: secrets-store.csi.k8s.io
+    readOnly: true
+    volumeAttributes: {secretProviderClass: spc-cert-b}</code></pre><p>수동 문제 해결 시 누락된 마운트 유지 리소스, CSI ID 권한, 별칭/Secret 이름 불일치, 고정된 버전, 회전 설정, 복제본 배치 및 ReferenceGrant를 확인하세요. Event Grid를 통해 웹후크 또는 Logic App으로 Key Vault 만료 알림을 보내는 방안을 고려하세요. Key Vault를 원본 저장소로 삼을 필요가 없다면 Azure DNS 또는 지원되는 Gateway HTTPRoute 솔버를 사용하는 cert-manager가 별도 대안이며 여기서는 구성하지 않습니다.</p><h2 id="routing-patterns">20. 공유 Gateway용 HTTPRoute 패턴</h2><p>아래의 모든 패턴은 VirtualService나 EnvoyFilter가 아닌 표준 Gateway API를 사용합니다. 애플리케이션 네임스페이스와 참조되는 Service를 먼저 만드세요. 공통 경로 외곽 구조는 한 번만 보여줍니다. 이후 규칙은 표시된 경로 이름, 네임스페이스, 호스트 이름 및 리스너를 사용하여 같은 외곽 구조 아래에 넣는 조각입니다. 함께 적용할 하나의 집합이 아닌 별도 예제이며 겹치는 경로는 의도적인 충돌 해결이 필요합니다.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: YOUR_ROUTE_NAME
+  namespace: YOUR_ROUTE_NAMESPACE
+spec:
+  parentRefs:
+  - name: shared-gateway
+    namespace: gateway-system
+    sectionName: https
+  hostnames: [api.contoso.io]
+  rules: []</code></pre><p>YOUR_ 자리표시자는 유효한 소문자 Kubernetes 이름으로 바꾸세요. https 예제에는 shared-gateway의 일치하는 HTTPS 리스너와 인증서가 필요합니다. 7절의 HTTP 전용 Gateway는 해당 리스너를 제공하지 않습니다. Service 포트는 Service의 포트이며 반드시 컨테이너 포트와 같지는 않습니다.</p><h3>경로 라우팅 및 대체 경로</h3><p>ns-console의 console-route, 호스트 이름 console.contoso.io에서는 /orders/list가 /list로 orders-service:8080에 도달하고 다른 모든 경로는 web-frontend:80에 도달합니다.</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /orders}
+  filters:
+  - type: URLRewrite
+    urlRewrite:
+      path: {type: ReplacePrefixMatch, replacePrefixMatch: /}
+  backendRefs:
+  - {name: orders-service, port: 8080}
+- matches:
+  - path: {type: PathPrefix, value: /}
+  backendRefs:
+  - {name: web-frontend, port: 80}</code></pre><p>포괄 규칙은 경로 대체 규칙이지 백엔드 5xx 응답을 가로채는 규칙이 아닙니다. 목록 순서와 관계없이 더 긴 접두사가 우선합니다. 가독성을 위해 대체 경로를 마지막에 배치하세요.</p><h3>요청 제한 시간</h3><p>ns-reports의 reports-timeout, https 리스너의 reports.contoso.io에 대한 예제입니다.</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /reports}
+  backendRefs:
+  - {name: reports-service, port: 8080}
+  timeouts:
+    request: 800ms</code></pre><p>요청 제한 시간은 게이트웨이의 요청/응답 처리 시간을 제한합니다. 지원되는 제한 시간을 초과하면 504가 발생할 수 있습니다. 단순히 백엔드의 첫 바이트까지 걸리는 시간이 아닙니다. backendRequest는 개별 백엔드 시도를 별도로 제한할 수 있으며 둘 다 설정되어 있으면 request 이내여야 합니다. 300ms, 2s 또는 1m 같은 지원되는 기간 값을 사용하세요. 배치/보고서 API에는 더 긴 제한을, 지연 시간에 민감한 호출에는 더 짧은 제한을 선택하세요.</p><h3>요청 및 응답 헤더 수정</h3><p>ns-demo의 header-modify-demo, echo.contoso.io → echo-service:8080에 대한 예제입니다.</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /}
+  filters:
+  - type: RequestHeaderModifier
+    requestHeaderModifier:
+      add:
+      - {name: x-forwarded-by, value: contoso-gateway}
+  - type: ResponseHeaderModifier
+    responseHeaderModifier:
+      add:
+      - {name: x-served-by, value: approuting-istio}
+      set:
+      - {name: cache-control, value: no-store}
+  backendRefs:
+  - {name: echo-service, port: 8080}</code></pre><p>add는 추가하고 set은 대체하며 remove는 지정된 헤더를 삭제합니다. 같은 방식으로 x-frame-options 같은 보안 헤더를 설정할 수 있습니다. 프록시도 식별 헤더를 추가한다는 이유만으로 클라이언트가 제공한 식별 헤더가 신뢰할 수 있는 보안 경계가 되는 것은 아닙니다.</p><h3>HTTP를 HTTPS로 리디렉션</h3><p>ns-demo의 redirect-http-to-https, hostnames [*.contoso.io]에서는 parentRefs.sectionName을 http로 바꾸세요.</p><pre><code class="language-yaml">rules:
+- filters:
+  - type: RequestRedirect
+    requestRedirect:
+      scheme: https
+      statusCode: 301</code></pre><p>Gateway는 백엔드로 전달하지 않고 영구 리디렉션을 반환합니다. 먼저 HTTPS를 구성하고 검증하세요.</p><h3>이전 도메인 이전</h3><p>redirect-legacy-domain, https의 호스트 이름 shop-old.contoso.io에 대한 예제입니다.</p><pre><code class="language-yaml">rules:
+- filters:
+  - type: RequestRedirect
+    requestRedirect:
+      hostname: shop.contoso.io
+      statusCode: 301</code></pre><p>클라이언트가 새 호스트 이름으로 이동하는 동안 경로는 유지됩니다. HTTPS 리디렉션에는 이전 호스트 이름의 TLS 인증서와 리스너 일치가 모두 동작해야 합니다.</p><h3>API 버전 /v1을 /v2로 리디렉션</h3><p>redirect-api-version, api.contoso.io에 대한 예제입니다.</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /v1}
+  filters:
+  - type: RequestRedirect
+    requestRedirect:
+      path: {type: ReplacePrefixMatch, replacePrefixMatch: /v2}
+      statusCode: 301
+- matches:
+  - path: {type: PathPrefix, value: /}
+  backendRefs:
+  - {name: api-backend, port: 8080}</code></pre><p>클라이언트에는 변경된 URL이 보입니다. 버전 변환을 내부에만 유지해야 하면 대신 URLRewrite를 사용하세요.</p><h3>리디렉션 없이 API 접두사 제거</h3><p>rewrite-strip-api-prefix, api.contoso.io에서는 /api/users가 api-backend:8080에서 /users가 됩니다.</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /api}
+  filters:
+  - type: URLRewrite
+    urlRewrite:
+      path: {type: ReplacePrefixMatch, replacePrefixMatch: /}
+  backendRefs:
+  - {name: api-backend, port: 8080}</code></pre><h3>마이크로서비스 라우팅 및 버전 접두사 제거</h3><p>rewrite-microservice-routing, app.contoso.io에 대한 예제입니다.</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: PathPrefix, value: /v1/users}
+  filters:
+  - type: URLRewrite
+    urlRewrite:
+      path: {type: ReplacePrefixMatch, replacePrefixMatch: /users}
+  backendRefs:
+  - {name: users-service, port: 8080}
+- matches:
+  - path: {type: PathPrefix, value: /v1/orders}
+  filters:
+  - type: URLRewrite
+    urlRewrite:
+      path: {type: ReplacePrefixMatch, replacePrefixMatch: /orders}
+  backendRefs:
+  - {name: orders-service, port: 8080}</code></pre><h3>백엔드 Host 재작성</h3><p>ns-demo의 rewrite-host-header, 수신 호스트 legacy.contoso.io에서는 외부 URL을 유지하면서 서비스 로컬 Host를 보냅니다.</p><pre><code class="language-yaml">rules:
+- filters:
+  - type: URLRewrite
+    urlRewrite:
+      hostname: legacy-app.ns-demo.svc.cluster.local
+  backendRefs:
+  - {name: legacy-app, port: 8080}</code></pre><p>특정 Host를 요구하는 기존 백엔드를 지원하기 위한 구성입니다. 서비스 DNS 이름은 클러스터 내 예시 이름이며 노출된 비공개 호스트 이름이 아닙니다.</p><h3>전체 상태 경로 하나 대체</h3><p>rewrite-health-endpoint, api.contoso.io에서는 정확한 /healthz → /actuator/health를 적용합니다.</p><pre><code class="language-yaml">rules:
+- matches:
+  - path: {type: Exact, value: /healthz}
+  filters:
+  - type: URLRewrite
+    urlRewrite:
+      path: {type: ReplaceFullPath, replaceFullPath: /actuator/health}
+  backendRefs:
+  - {name: api-backend, port: 8080}</code></pre><h3>일치 및 필터 규칙</h3><ul><li>Exact 경로는 PathPrefix보다 구체적이며 긴 접두사가 짧은 접두사보다 우선합니다. 메서드/헤더/쿼리 일치는 Gateway API 우선순위 규칙에 따라 구체성을 높입니다. 동률 및 경로 간 충돌에는 추가 표준 규칙이 있으므로 YAML 순서만으로 결정되지 않습니다.</li><li>PathPrefix는 임의의 정규식 구문이 아니라 경로 요소 경계를 따릅니다. RegularExpression 지원은 구현별로 다릅니다.</li><li>RequestRedirect는 클라이언트가 보는 내용을 변경하고 URLRewrite는 내부적으로 업스트림 요청을 변경합니다. 하나의 규칙에 호환되지 않는 리디렉션/재작성 필터를 결합하지 마세요.</li><li>호스트 이름 일치, 리스너 sectionName, allowedRoutes, 참조 권한 및 성공적인 백엔드 참조 확인이 모두 맞아야 합니다.</li><li>이 표준 경로 예제는 응답 상태 기반 사용자 지정 오류 페이지나 NGINX 스타일의 전역 기본 백엔드를 제공하지 않습니다. 포괄 경로는 백엔드 오류를 가로채지 않습니다.</li></ul><h2 id="limitations-and-bugs">21. 원본 작성 당시의 지원 한계 및 관리형 컨트롤 플레인 버그</h2><table><thead><tr><th>영역</th><th>원본의 상태 및 계획 시 영향</th></tr></thead><tbody><tr><td>Istio 메시 기능</td><td>이 인그레스 전용 구현에는 사이드카 주입, VirtualService, DestinationRule 또는 EnvoyFilter가 없으며 메시 추가 기능을 동시에 사용할 수 없습니다.</td></tr><tr><td>이그레스 관리</td><td>이 Application Routing Gateway 기능에서는 지원하지 않습니다.</td></tr><tr><td>TLSRoute/SNI 패스스루</td><td>원본 GA 기준 구성에서는 지원하지 않습니다. 향후 Istio 1.30에 대한 기대가 언급되었으나 배포 보장은 아닙니다.</td></tr><tr><td>쿠키 세션 선호도</td><td>2026년 5월 원본: sessionPersistence는 Experimental 전용이었고 설치된 Standard v1.3.0 스키마에는 없었습니다. 업스트림 Istio 구현 이슈는 미해결 상태였습니다.</td></tr><tr><td>업그레이드 모델</td><td>Application Routing의 부/패치 버전 업데이트는 현재 위치에서 수행합니다. 메시 추가 기능은 부 버전에 리비전 기반 카나리를 사용하고 패치는 현재 위치에서 수행합니다.</td></tr></tbody></table><p>고정 세션에는 원본이 애플리케이션 수준 상태/쿠키 처리, 공유 상태 저장소 또는 의도적으로 선택한 다른 지원 아키텍처를 권장합니다. 지원되지 않는 sessionPersistence 필드를 직접 패치하는 것은 해결책이 아닙니다. 해당 CRD를 금지하는 구성에 메시의 consistentHash DestinationRule을 가져올 수는 없습니다. 향후 업스트림 구현이 이루어져도 릴리스 채택과 AKS 출시가 필요하며 제공 날짜는 제시되어 있지 않습니다.</p><h3>istiod HPA의 CPU 요청 누락</h3><p>원본은 관리형 istiod Deployment에 resources.requests.cpu가 없어 FailedGetResourceMetric과 FailedComputeMetricsReplicas 이벤트가 반복된다고 보고합니다. CPU 요청이라는 분모가 없으면 HPA는 사용률을 계산할 수 없어 확장하지 못하고 최소값에 머무릅니다. 이는 컨트롤 플레인 HPA이며 원본의 Gateway 데이터 플레인 HPA는 정상 동작했습니다.</p><pre><code class="language-bash">kubectl get hpa -n aks-istio-system
+kubectl describe hpa -n aks-istio-system "YOUR_ISTIOD_HPA_NAME"
+kubectl get deploy -n aks-istio-system -l app=istiod \
+  -o jsonpath='{.items[*].spec.template.spec.containers[*].resources}'</code></pre><p>원본에 따르면 직접 패치는 추가 기능 조정자가 되돌렸으며 고객 측 우회 방법은 제공되지 않았습니다. 정확한 빌드와 증거를 첨부하여 Azure 지원 사례를 열고 관리형 수정을 추적하며 알려진 이벤트 노이즈와 새로운 장애를 구별하세요. 정상적인 데이터 플레인 확장이 무제한 컨트롤 플레인 용량을 입증하는 것은 아닙니다.</p><h2 id="migration-cutover">22. 마이그레이션 및 운영 승인 체크리스트</h2><ol><li>CLI 버전, 리전별 출시, 관리형 Standard CRD, 충돌하는 메시가 없는지 및 Accepted 상태의 approuting-istio 클래스를 확인하세요.</li><li>NGINX 기준 구성을 확립하고 병렬 Gateway를 테스트하는 동안 유지하세요. 사용 중인 고정 LB IP를 재사용하거나 DNS를 성급하게 변경하지 마세요.</li><li>모든 변환 산출물, 일치하지 않는 클래스, 정규식/재작성 동작, 제한 시간 및 지원되지 않는 기존 주석을 검토하세요.</li><li>Gateway 하나가 예상한 Deployment, Service, HPA 및 PDB를 만드는지 확인하세요. 프라이빗/퍼블릭 노출과 네임스페이스 토폴로지를 의도적으로 선택하세요.</li><li>가능하면 운영자 TLS 경로를 사용하고, 그렇지 않으면 수동 CSI 마운트, 회전 및 인증서 권한 부여를 명시적으로 책임지세요. 신뢰, SNI, 만료, 회전 및 새 핸드셰이크를 테스트하세요.</li><li>외부-Gateway 및 Gateway-백엔드 경로의 NetworkPolicy, 클라이언트 IP 보존 및 443을 포함한 모든 LB 프로브/포트를 검증하세요.</li><li>경로 우선순위, 헤더, 리디렉션, 요청 크기, 장기 실행 트래픽, 오류 처리, 세션 상태 및 중단 예산을 테스트하세요.</li><li>액세스 로그를 수집하고 컨트롤 플레인 HPA 문제와 데이터 플레인 오류를 구별하세요.</li><li>이전 백엔드로 되돌릴 수 있도록 DNS 또는 전면 Application Gateway 전환을 계획하세요. 경로가 원래 Host에 의존하면 이를 보존하고 DNS 조정자 간 경합을 피하세요.</li><li>트래픽과 운영 승인이 완료된 후에만 이전 인그레스를 폐기하세요. 원본은 별도 마이그레이션 가이드를 참조하지만 조사된 리포지토리 목록에는 없습니다. 누락된 상세 전환 스크립트를 만들어 내지 않았습니다.</li></ol><h2 id="cleanup">23. 정리 및 보존 주의 사항</h2><p>활성 클러스터와 네임스페이스를 확인한 후 테스트 리소스로 확인된 대상에만 정리를 실행하세요. 인증서 인프라보다 먼저 종속 경로와 Gateway를 제거하세요. 초기 수동 정리 절차는 Deployment를 권장한 뒤 Pod를 삭제하는 오류가 있었으며 아래에는 수정한 리소스 종류를 보여줍니다.</p><pre><code class="language-bash">kubectl delete -n "$APP_NS" gateway httpbin-gateway
+kubectl delete -n "$APP_NS" httproute httpbin
+kubectl delete -n "$APP_NS" deployment secrets-store-sync-httpbin
+kubectl delete -n "$APP_NS" secretproviderclass httpbin-credential-spc
+kubectl delete -n "$APP_NS" secret httpbin-credential
+kubectl delete -n "$APP_NS" -f https://raw.githubusercontent.com/istio/istio/release-1.27/samples/httpbin/httpbin.yaml
+
+# Only when no remaining Gateway workload needs the implementation:
+az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" --disable-app-routing-istio
+# Removing managed Gateway API CRDs affects every dependent Gateway/Route:
+# az aks update -g "$RESOURCE_GROUP" -n "$CLUSTER" --disable-gateway-api
+
+# Only for a disposable vault no longer used by any workload:
+# az keyvault delete --name "$AKV_NAME" --resource-group "$RESOURCE_GROUP"
+# az keyvault purge --name "$AKV_NAME" --location "$LOCATION"</code></pre><p>제거 보호는 보존 기간이 끝나기 전 영구 삭제를 막습니다. 안전장치를 비활성화하거나 즉시 제거에 성공한다고 가정하지 마세요. 운영자가 만든 리소스와 UAMI/FIC/역할 할당은 무차별적으로 삭제하지 말고 남아 있는 소비 리소스를 기준으로 검토해야 합니다. 운영자 업데이트는 완전한 ID 정리 절차를 제공하지 않습니다.</p><h2 id="references">참고 자료 및 게시 범위</h2><ul><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing-gateway-api">Application Routing Gateway API</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/managed-gateway-api">관리형 Gateway API 설치</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/istio-gateway-api#configmap-customizations">Gateway 사용자 지정 허용 목록</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/istio-gateway-api#annotation-customizations">주석 사용자 지정</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing-gateway-api-dns-tls#configure-tls-termination-on-a-gateway">현재 운영자 DNS/TLS 통합 문서</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing-gateway-api-tls">과거 TLS 문서 링크</a></li><li><a href="https://learn.microsoft.com/en-us/troubleshoot/azure/azure-kubernetes/create-upgrade-delete/error-code-poddrainfailure">PDB 드레이닝 실패 문제 해결</a></li><li><a href="https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage#config-access-log-format-response-flags">Envoy 응답 플래그</a></li><li><a href="https://github.com/Azure/AKS/issues/5728">공개 액세스 로그 이슈</a></li><li><a href="https://github.com/istio/istio/issues/55839">업스트림 세션 지속성 이슈</a></li><li><a href="https://github.com/Azure/AKS/issues/5312">과거 CSI 동기화 이슈</a></li><li><a href="https://cert-manager.io/docs/usage/gateway/">cert-manager Gateway 사용</a></li></ul><p>이 문서는 원본에서 측정한 관찰 결과, 한계 및 미완료 조사를 보존하면서 오래된 주장과 안전하지 않은 가정을 표시합니다. 검증을 위한 공개 참조는 유지하며 비공개 리포지토리 링크, 스크린샷, 자격 증명 값 또는 원래 환경 매핑은 공개하지 않습니다.</p>

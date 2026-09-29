@@ -1,0 +1,19 @@
+{
+  "slug": "envoy-gateway",
+  "category": "AKS",
+  "title": "AKS의 자체 관리형 Envoy Gateway와 NGINX 마이그레이션",
+  "summary": "독립적인 데이터 플레인과 안전한 드레이닝을 갖춘 내부 Envoy Gateway를 배포하고 NGINX 라우팅 기능의 대체 구성을 명확하게 정의합니다.",
+  "sourceDocuments": [
+    "AKS에 Envoy Gateway 설치",
+    "Application Routing NGINX에서 Envoy Gateway로 마이그레이션"
+  ],
+  "downloads": [],
+  "omissions": [
+    "환경별 클러스터 및 리소스 그룹 이름은 변수로 대체했으며, 사설 주소와 원본 링크는 공개하지 않습니다.",
+    "두 번째 hello-world 애플리케이션의 반복 매니페스트는 이름, 네임스페이스, 레이블, ServiceAccount 및 제목을 정확히 치환하는 방식으로 통합했습니다. 해당 Gateway, 경로 및 검증은 명시적으로 유지했습니다.",
+    "원본 폴더에는 독립된 리소스 파일이 없습니다. 인라인 예제를 원본 다운로드 파일인 것처럼 표시하지 않았습니다."
+  ],
+  "bodyFile": "envoy-gateway.html",
+  "sourceJsonSha256": "6aadcd2747f9884a26ae77252b760e75fa1dd34647c4c61233574f5fe65525d7",
+  "sourceBodySha256": null
+}

@@ -1,0 +1,338 @@
+<p>이 가이드는 설치와 Application Routing NGINX 마이그레이션을 하나의 자체 관리형 Envoy Gateway 운영 절차로 통합합니다. AKS에서 관리하는 Istio 기반 Application Routing 구현과는 별개입니다. 원본은 Envoy Gateway v1.7.0과 예시용 v1.8.0 업그레이드를 사용합니다. 또한 업스트림 Ingress NGINX의 2026년 3월 지원 종료와 NGINX Application Routing 추가 기능에 대한 Microsoft의 2026년 11월까지의 지원을 인용합니다. 마이그레이션 기한을 정하기 전에 수명 주기와 릴리스 정보를 확인하세요.</p><h2 id="architecture">1. 아키텍처, 소유권 및 장단점</h2><p>Helm은 구성을 조정하지만 애플리케이션 트래픽은 처리하지 않는 컨트롤 플레인을 설치합니다. Gateway를 만들면 Envoy 데이터 플레인 Deployment, 전용 LoadBalancer Service 및 구성된 경우 HPA가 프로비전됩니다. 리소스 연결 순서는 <code>EnvoyProxy → GatewayClass → Gateway → HTTPRoute</code>입니다.</p><table><thead><tr><th>리소스</th><th>용도</th><th>이 예제의 소유 주체</th></tr></thead><tbody><tr><td>EnvoyProxy</td><td>공급자별 Service, 배포, 자동 크기 조정 및 드레이닝 설정</td><td>플랫폼 팀, envoy-gateway-system</td></tr><tr><td>GatewayClass</td><td>클러스터 범위의 재사용 가능한 인프라 패턴. EnvoyProxy 참조</td><td>플랫폼 팀</td></tr><tr><td>Gateway</td><td>실제 리스너와 독립적인 데이터 플레인</td><td>플랫폼 거버넌스하의 애플리케이션 네임스페이스</td></tr><tr><td>HTTPRoute</td><td>호스트/경로 일치, 필터 및 백엔드 참조</td><td>애플리케이션 팀</td></tr></tbody></table><ul><li>장점: Gateway API의 책임 분리, 검증된 Envoy 프록시 구현, 독립적으로 확장 가능한 테넌트 게이트웨이, 퍼블릭·프라이빗·Private Link Service 배포 패턴입니다.</li><li>비용: 운영자가 Helm 업그레이드, 보안 패치, CRD, 모니터링 및 인시던트 대응을 책임집니다. EnvoyProxy, GatewayClass, Gateway, HTTPRoute 및 정책 CRD라는 새로운 개념도 익혀야 합니다.</li><li>Gateway API를 선택하는 것만으로 호환성이 보장되지는 않습니다. 구현 및 버전별 기능 매트릭스, 특히 정책 확장과 변환된 주석을 확인하세요.</li><li>원본은 단기적으로 관리형 NGINX 추가 기능으로 이동하고 장기적으로 Envoy를 도입하는 전략을 설명합니다. 이는 계획 수립 패턴이지, 자체 관리형 Envoy만이 Microsoft에서 지원하는 유일한 이전 대상이라는 뜻이 아닙니다.</li></ul><h2 id="cluster">2. 격리된 AKS 실습 환경 만들기</h2><pre><code class="language-bash">RESOURCE_GROUP="YOUR_RESOURCE_GROUP"
+CLUSTER_NAME="YOUR_CLUSTER"
+LOCATION="eastus"
+VM_SKU="Standard_D2a_v4"
+NODE_COUNT=2
+az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+az aks create --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" \
+  --location "$LOCATION" --node-count "$NODE_COUNT" --node-vm-size "$VM_SKU" \
+  --network-plugin azure --network-plugin-mode overlay \
+  --generate-ssh-keys --enable-managed-identity
+az aks get-credentials --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" --overwrite-existing
+kubectl get nodes
+kubectl cluster-info</code></pre><p>원본 기준 구성은 Standard_D2a_v4 노드 2개(2 vCPU, 8 GB RAM), taint가 없는 시스템 풀, Azure CNI Overlay 및 관리 ID입니다. Kubernetes 버전을 고정하지 않으므로 서비스가 사용 가능한 기본 버전을 선택합니다. 프로덕션에서는 지원되는 버전을 의도적으로 선택하고 검증해야 합니다. overwrite-existing으로 자격 증명을 가져오면 로컬 kubeconfig 항목이 변경됩니다.</p><h2 id="control-plane">3. 컨트롤 플레인 설치 및 검증</h2><pre><code class="language-bash">EG_VERSION="v1.7.0"
+helm install eg oci://docker.io/envoyproxy/gateway-helm \
+  --version "$EG_VERSION" -n envoy-gateway-system --create-namespace \
+  --set podDisruptionBudget.minAvailable=1 \
+  --set deployment.replicas=2 \
+  --set deployment.envoyGateway.resources.requests.cpu=125m \
+  --set deployment.envoyGateway.resources.requests.memory=128Mi \
+  --set deployment.envoyGateway.resources.limits.cpu=500m \
+  --set deployment.envoyGateway.resources.limits.memory=512Mi
+kubectl wait deployment envoy-gateway -n envoy-gateway-system \
+  --for=condition=Available=True --timeout=5m
+kubectl get pods -n envoy-gateway-system</code></pre><p>이 예제는 고정된 컨트롤 플레인 복제본 2개, PDB minAvailable=1, CPU 요청/제한 125m/500m, 메모리 요청/제한 128Mi/512Mi를 사용합니다. 애플리케이션 트래픽은 다른 곳에서 처리하므로 컨트롤 플레인 HPA는 구성하지 않습니다. 이는 원본의 크기 산정 기준이며 모든 환경에 적용되는 용량 권장 사항은 아닙니다.</p><h3>컨트롤러보다 먼저 CRD 업그레이드</h3><blockquote>Helm은 차트의 CRD를 자동 업그레이드하지 않습니다. 기존 리소스를 백업하고 릴리스 및 스키마 마이그레이션 참고 사항을 읽은 다음, 컨트롤러를 업그레이드하기 전에 CRD를 업데이트하세요. 제공되는 API 버전 중 하나가 사용 중단되었다는 이유만으로 CRD를 삭제하지 마세요. CRD를 삭제하면 모든 인스턴스가 삭제됩니다.</blockquote><pre><code class="language-bash"># Illustrative upgrade; confirm the target release exists and supports your cluster.
+helm pull oci://docker.io/envoyproxy/gateway-helm --version v1.8.0 --untar
+kubectl apply -f gateway-helm/crds/
+kubectl get crd | grep -E "gateway|envoy"
+helm upgrade eg oci://docker.io/envoyproxy/gateway-helm \
+  --version v1.8.0 -n envoy-gateway-system \
+  --set podDisruptionBudget.minAvailable=1 \
+  --set deployment.replicas=2 \
+  --set deployment.envoyGateway.resources.requests.cpu=125m \
+  --set deployment.envoyGateway.resources.requests.memory=128Mi \
+  --set deployment.envoyGateway.resources.limits.cpu=500m \
+  --set deployment.envoyGateway.resources.limits.memory=512Mi
+kubectl wait deployment envoy-gateway -n envoy-gateway-system \
+  --for=condition=Available=True --timeout=5m
+kubectl get pods -n envoy-gateway-system
+# Remove only the chart directory downloaded for this operation, if no longer needed.
+rm -r gateway-helm</code></pre><p><code>kubectl apply</code> 명령은 더 이상 사용하지 않는 CRD를 제거하지 않습니다. 사용 중단된 리소스 목록을 작성하고 릴리스별 마이그레이션 절차를 따르세요. 원본은 v1.2.0 전후의 GRPCRoute/ReferenceGrant v1alpha2 제거를 언급합니다. 이를 served/storage 버전을 점검하라는 주의 사항으로 받아들여야 하며, CRD를 일괄 삭제해도 안전하다는 뜻으로 해석하면 안 됩니다. 위 업그레이드는 복제본 2개를 명시적으로 유지하여, 나머지는 동등한 원본 Helm 옵션에서 빠진 부분을 보완합니다.</p><h2 id="private-gateway">4. 드레이닝 및 자동 크기 조정을 갖춘 내부 Gateway 구성</h2><p>다음 세 리소스를 순서대로 적용하세요. EnvoyProxy는 인프라 네임스페이스에, Gateway는 default에 있습니다. 이 배포 모델에서 생성되는 데이터 플레인 Pod와 Service는 envoy-gateway-system에 있습니다.</p><pre><code class="language-yaml">apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: internal-proxy
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: LoadBalancer
+        annotations:
+          service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+      envoyDeployment:
+        replicas: 2
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  terminationGracePeriodSeconds: 300
+      envoyHpa:
+        minReplicas: 2
+        maxReplicas: 10
+        metrics:
+        - type: Resource
+          resource:
+            name: cpu
+            target:
+              type: Utilization
+              averageUtilization: 80
+  shutdown:
+    drainTimeout: 120s
+    minDrainDuration: 5s
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg-private
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: internal-proxy
+    namespace: envoy-gateway-system
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg-private
+  namespace: default
+spec:
+  gatewayClassName: eg-private
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80</code></pre><pre><code class="language-bash">kubectl get envoyproxy -n envoy-gateway-system
+kubectl get gatewayclass
+kubectl get gateway
+kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-private</code></pre><h3>세 가지 종료 설정이 모두 중요한 이유</h3><table><thead><tr><th>설정</th><th>예제</th><th>의미</th></tr></thead><tbody><tr><td>minDrainDuration</td><td>5s</td><td>연결이 더 일찍 끝나도 기다리는 최소 시간. 엔드포인트 제거가 전파될 시간을 제공</td></tr><tr><td>drainTimeout</td><td>120s</td><td>남은 연결을 닫기 전 기존 요청을 드레이닝하는 최대 시간</td></tr><tr><td>terminationGracePeriodSeconds</td><td>300</td><td>강제 SIGKILL 전 Kubernetes가 허용하는 전체 종료 유예 시간</td></tr></tbody></table><p>SIGTERM 이후 Envoy는 요청이 끝날 때까지 최소 드레이닝 간격 이상, 드레이닝 제한 시간 이하로 기다립니다. 프록시가 먼저 종료되지 않도록 Kubernetes 유예 시간은 드레이닝 제한 시간보다 길어야 합니다. 적절한 드레이닝이 없으면 롤링 업데이트가 활성 요청을 종료하여 502 오류가 발생할 수 있습니다. 장시간 업로드와 WebSocket에는 워크로드별 설정이 필요하며 어떤 제한 시간도 무손실을 보장하지 않습니다.</p><p>기본 제공 envoyHpa는 Gateway마다 최소 2, 최대 10, CPU 사용률 목표 80%의 독립적인 HPA를 생성하므로 별도 HPA 매니페스트는 필요하지 않습니다. 플랫폼 팀은 여러 EnvoyProxy/GatewayClass 연결 구성을 제공할 수 있습니다. 예를 들어 API 패턴은 드레이닝 30s/유예 60s, 스트리밍 패턴은 120s/300s, 업로드 패턴은 180s/600s입니다. 애플리케이션 팀은 공유 인프라를 변경하지 않고 클래스를 선택합니다.</p><h2 id="first-app">5. 테스트 애플리케이션과 경로 배포</h2><pre><code class="language-yaml">apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aks-helloworld
+  namespace: default
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aks-helloworld
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+  selector: {app: aks-helloworld}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aks-helloworld
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: aks-helloworld}
+  template:
+    metadata:
+      labels: {app: aks-helloworld}
+    spec:
+      serviceAccountName: aks-helloworld
+      containers:
+      - name: aks-helloworld
+        image: mcr.microsoft.com/azuredocs/aks-helloworld:v1
+        ports:
+        - containerPort: 80
+        env:
+        - name: TITLE
+          value: "Envoy Gateway on AKS"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: aks-helloworld
+  namespace: default
+spec:
+  parentRefs:
+  - name: eg-private
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /}
+    backendRefs:
+    - name: aks-helloworld
+      port: 80</code></pre><pre><code class="language-bash">kubectl wait --timeout=60s --for=condition=available deployment/aks-helloworld
+kubectl get pods -l app=aks-helloworld
+GATEWAY_IP=$(kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-private \
+  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
+kubectl run curl-test --rm -it --restart=Never --image=curlimages/curl -- curl -s "http://$GATEWAY_IP/"
+
+# Alternative for local browser testing: discover the Service rather than reconstructing its generated name.
+SERVICE_NAME=$(kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-private \
+  -o jsonpath='{.items[0].metadata.name}')
+kubectl port-forward -n envoy-gateway-system "svc/$SERVICE_NAME" 8080:80
+# Browse http://localhost:8080 while the forward is active.</code></pre><p>내부 LoadBalancer는 연결된 사설 네트워크에서 접근할 수 있지만 인터넷에서 직접 접근할 수는 없습니다. 동일 VNet의 VM, VPN 연결 클라이언트, Bastion을 통해 접근하는 VM 또는 테스트 Pod를 사용하세요. 트래픽은 사설 클라이언트에서 Azure Internal LoadBalancer, Envoy 데이터 플레인, HTTPRoute, ClusterIP Service, 애플리케이션 Pod 순서로 흐릅니다.</p><pre><code class="language-bash">kubectl get gateway
+kubectl get httproute
+kubectl get pods,svc -n envoy-gateway-system</code></pre><h2 id="second-team">6. 두 번째 네임스페이스로 격리 검증</h2><p>team-b 네임스페이스를 만드세요. 앞의 ServiceAccount, Service 및 Deployment를 복제하되 네임스페이스는 <code>team-b</code>, 이름과 app 레이블은 <code>aks-helloworld-b</code>, serviceAccountName과 선택자는 그에 맞게 설정하고 TITLE은 <code>Team-B App on Envoy Gateway</code>로 바꾸세요. 복제본 2개, 동일한 이미지 및 포트 80은 유지하세요. 이 정확한 치환은 동작을 바꾸지 않으면서 원본의 두 번째 전체 애플리케이션 블록을 재현합니다.</p><pre><code class="language-bash">kubectl create namespace team-b
+# Apply the second application's resources with the substitutions above.
+kubectl wait --timeout=60s --for=condition=available deployment/aks-helloworld-b -n team-b</code></pre><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg-private-team-b
+  namespace: team-b
+spec:
+  gatewayClassName: eg-private
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: aks-helloworld-b
+  namespace: team-b
+spec:
+  parentRefs:
+  - name: eg-private-team-b
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /}
+    backendRefs:
+    - name: aks-helloworld-b
+      port: 80</code></pre><pre><code class="language-bash">kubectl get pods -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-namespace
+kubectl get gateway -A
+kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name
+kubectl get hpa -n envoy-gateway-system
+GATEWAY_IP_B=$(kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-private-team-b \
+  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
+kubectl run curl-test-b --rm -it --restart=Never \
+  --image=curlimages/curl -- curl -s "http://$GATEWAY_IP_B/"</code></pre><p>예상 결과: 기존 데이터 플레인 Pod 2개는 유지되고, team-b 데이터 플레인 Pod 2개가 나타나며, 컨트롤 플레인 복제본 2개는 바뀌지 않습니다. 사설 LoadBalancer 주소 2개와 각각 최소 2/최대 10으로 독립적으로 확장하는 HPA 2개가 있습니다. GatewayClass를 공유하는 것은 템플릿을 공유하는 것이지 실제 프록시 인스턴스를 공유하는 것이 아닙니다.</p><h2 id="topology">7. 독립 게이트웨이와 공유 게이트웨이 비교</h2><table><thead><tr><th>전략</th><th>리소스</th><th>장단점</th></tr></thead><tbody><tr><td>팀당 Gateway 1개</td><td>팀마다 사설 IP, Deployment 및 HPA 각각 1개</td><td>트래픽, 크기 조정 및 장애 격리가 우수하지만 기본 비용이 더 높음</td></tr><tr><td>공유 Gateway 1개</td><td>사설 IP 1개와 공유 데이터 플레인 Pod 2–10개. 팀 경로는 호스트/경로로 분리</td><td>비용이 낮고 진입점이 하나지만 용량과 장애 도메인을 공유</td></tr></tbody></table><p>공유 Gateway의 경우 승인된 네임스페이스에만 레이블을 지정하고 리스너를 통해 연결을 허용하세요. 해당 네임스페이스의 경로는 parentRefs에 Gateway 네임스페이스를 포함해야 합니다. 이는 연결 권한이며 패킷 흐름은 여전히 네트워크 정책이 제어합니다.</p><pre><code class="language-yaml">listeners:
+- name: http
+  protocol: HTTP
+  port: 80
+  allowedRoutes:
+    namespaces:
+      from: Selector
+      selector:
+        matchLabels:
+          shared-gateway: "true"</code></pre><h2 id="application-gateway">8. 프라이빗 프록시 앞에 Application Gateway 배치</h2><p>퍼블릭 Application Gateway는 예시 도메인 <code>api.contoso.com</code>의 TLS를 종료하고 Envoy 사설 LB 주소로 HTTP를 전달하며, HTTPRoute가 Host와 경로로 백엔드를 선택하게 할 수 있습니다. 그러면 DNS는 Application Gateway의 공용 IP를 가리킵니다. Envoy 자체는 DNS 소유권이 아니라 HTTP Host 헤더를 일치시킵니다.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api-route
+  namespace: default
+spec:
+  hostnames: [api.contoso.com]
+  parentRefs:
+  - name: eg-private
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /api/users}
+    backendRefs:
+    - name: user-service
+      port: 80
+  - matches:
+    - path: {type: PathPrefix, value: /api/orders}
+    backendRefs:
+    - name: order-service
+      port: 80</code></pre><table><thead><tr><th>Application Gateway 설정</th><th>필수 선택</th></tr></thead><tbody><tr><td>백엔드 풀</td><td>VNet 연결성이 있는 Envoy 사설 LoadBalancer IP</td></tr><tr><td>백엔드 호스트 이름 재정의</td><td>원래 api.contoso.com Host를 사용하는 경우 끄기</td></tr><tr><td>상태 프로브</td><td>도달 가능한 백엔드 경로와 실제 경로에 일치하는 적절한 Host</td></tr></tbody></table><blockquote>예기치 않은 Host 재작성은 호스트 이름 일치를 깨뜨립니다. 클라이언트 요청과 프로브를 모두 검증하세요. Application Gateway와 Envoy 사이의 HTTP는 원본의 오프로딩 패턴이며 종단 간 암호화가 아닙니다. 보안 요구 사항에서 필요로 하면 백엔드 TLS를 선택하세요.</blockquote><h2 id="migration-map">9. NGINX 기능을 명시적으로 매핑</h2><table><thead><tr><th>NGINX/App Routing 기능</th><th>Envoy/Gateway API 대상</th></tr></thead><tbody><tr><td>Ingress 및 주석</td><td>Gateway + HTTPRoute 및 공급자별 정책</td></tr><tr><td>Key Vault TLS Secret</td><td>Envoy에서 TLS를 종료하는 경우 CSI 동기화 및 HTTPS 리스너 certificateRefs</td></tr><tr><td>호스트 / 경로</td><td>HTTPRoute hostnames / matches.path</td></tr><tr><td>rewrite-target</td><td>URLRewrite 필터</td></tr><tr><td>ssl-redirect</td><td>HTTP 리스너에만 연결하는 RequestRedirect 필터</td></tr><tr><td>limit-rps / 제한 시간</td><td>BackendTrafficPolicy. 의미 검토 필요</td></tr><tr><td>CORS / 원본 주소 범위</td><td>SecurityPolicy. 설치된 CRD의 지원 여부에 따라 다름</td></tr><tr><td>자동 DNS</td><td>별도로 운영하는 external-dns 또는 전면 Application Gateway에서 DNS 관리</td></tr><tr><td>수명 주기</td><td>Azure 관리형 추가 기능 업데이트가 아닌 관리자 관리형 Helm 설치</td></tr></tbody></table><h3>TLS: 종료 지점 선택</h3><p>직접 노출하는 경우 Key Vault → SecretProviderClass/CSI → Kubernetes TLS Secret 파이프라인을 재사용하고 Gateway의 네임스페이스에서 Secret을 참조하세요. Application Gateway 오프로딩의 경우 인증서를 Application Gateway에서 관리하고(선택적으로 Key Vault 활용) Envoy 리스너는 HTTP 전용으로 유지하세요. 이전 NGINX에서 사용했다는 이유만으로 불필요한 CSI 파이프라인을 배포하지 마세요.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg-private
+  namespace: default
+spec:
+  gatewayClassName: eg-private
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: keyvault-api-contoso-com</code></pre><p>Secret 이름은 예시입니다. Secret이 이미 존재해야 하며 서로 일치하는 인증서와 개인 키를 포함해야 합니다. 원본은 완전한 Envoy CSI 또는 ID 설정을 제공하지 않습니다. 네임스페이스 간 인증서 참조에는 지원되는 ReferenceGrant도 필요합니다.</p><h3>/api를 백엔드 루트로 재작성</h3><p>원래 NGINX 패턴은 <code>/api(/|$)(.*)</code> 및 <code>rewrite-target: /$2</code>를 사용했습니다. 아래의 표준 접두사 재작성은 NGINX 정규식 구문을 복사하지 않고 /api를 제거합니다.</p><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api-rewrite
+  namespace: default
+spec:
+  parentRefs:
+  - name: eg-private
+  hostnames: [api.contoso.com]
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: /api}
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+    backendRefs:
+    - name: api-service
+      port: 80</code></pre><h3>HTTP에서 HTTPS로 리디렉션</h3><pre><code class="language-yaml">apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-redirect
+  namespace: default
+spec:
+  parentRefs:
+  - name: eg-private
+    sectionName: http
+  rules:
+  - filters:
+    - type: RequestRedirect
+      requestRedirect:
+        scheme: https
+        statusCode: 301</code></pre><p>애플리케이션 HTTPS 경로를 <code>sectionName: https</code>에 연결하고 리디렉션을 활성화하기 전에 HTTPS 리스너와 인증서가 동작하는지 확인하세요. HTTP 오프로딩 프런트엔드 뒤에 이 직접 Envoy 패턴을 무작정 적용하면 리디렉션이 반복될 수 있으므로 주의하세요.</p><h3>제한 시간 정책</h3><p>원본은 NGINX의 읽기/전송 제한 시간 120초와 연결 제한 시간 10초를 다음 정책에 매핑합니다. 이는 일대일 대응이 아닙니다. 연결 유휴 제한 시간과 전체 요청 제한 시간은 업스트림 연결 제한 시간을 10초로 구성하지 않습니다.</p><pre><code class="language-yaml">apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: api-timeout
+  namespace: default
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: api-route
+  timeout:
+    http:
+      connectionIdleTimeout: 120s
+      requestTimeout: 120s</code></pre><h3>로컬 요청 속도 제한</h3><pre><code class="language-yaml">apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: api-ratelimit
+  namespace: default
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: api-route
+  rateLimit:
+    type: Local
+    local:
+      rules:
+      - limit:
+          requests: 10
+          unit: Second</code></pre><p>NGINX 원본은 초당 요청 10개와 버스트 배수 5를 사용했습니다. 이 로컬 정책은 해당 버스트를 유지하지 않으며 클러스터 전체의 집계 제한을 의미하지도 않습니다. 확장 시 프록시별 동작을 검증하고 전역 제한이 필요한지 판단하세요. 제한 시간과 요청 속도 제한 예제는 개별 기능을 보여주는 대안입니다. 동일 대상을 가리키는 여러 정책이 병합된다고 가정하지 말고 호환 가능한 필드를 의도적으로 설계한 하나의 정책으로 결합하세요.</p><h3>원본 IP 권한 부여</h3><pre><code class="language-yaml">apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: ip-whitelist
+  namespace: default
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: eg-private
+  authorization:
+    defaultAction: Deny
+    rules:
+    - action: Allow
+      principal:
+        clientCIDRs:
+        - "10.0.0.0/8"
+        - "172.16.0.0/12"</code></pre><p>이는 예시 RFC1918 범위이지 승인된 프로덕션 허용 목록이 아닙니다. 다른 프록시가 Envoy 앞에 있으면 이 정책에 의존하기 전에 어느 IP를 클라이언트로 간주할지, 전달된 헤더를 어떻게 신뢰할지 정하세요. 원본에서는 CORS를 SecurityPolicy에 매핑하지만 완전한 CORS 정책을 제공하지 않습니다. NGINX 주석이 그대로 이어진다고 가정하지 말고 설치된 스키마를 확인하고 프리플라이트, 자격 증명, 원본 및 응답 헤더를 테스트하세요.</p><h2 id="dns">10. 관리형 DNS 자동화를 의도적으로 대체</h2><p>NGINX 추가 기능은 연결된 Azure DNS 영역을 통해 external-dns 통합을 제공했습니다. 자체 관리형 Envoy는 이를 제공하지 않습니다. 원본의 예시 Helm 명령은 다음과 같습니다.</p><pre><code class="language-bash"># Configuration fragment only: configure the chart repository, compatible chart version,
+# Azure authentication, zone/domain scoping and ownership before running.
+helm install external-dns bitnami/external-dns \
+  --set provider=azure \
+  --set azure.resourceGroup="YOUR_DNS_ZONE_RESOURCE_GROUP" \
+  --set policy=sync \
+  --set 'sources[0]=gateway-httproute' \
+  --set 'sources[1]=gateway-grpcroute'</code></pre><blockquote>이는 완전한 external-dns 설치가 아닙니다. 차트 값은 버전마다 다르며 원본에는 ID와 DNS 권한이 빠져 있습니다. sync 정책은 레코드를 삭제할 수 있습니다. 도메인과 영역의 범위를 제한하고 소유권을 구성하며 마이그레이션 중 두 컨트롤러가 같은 레코드를 조정하지 않도록 하세요.</blockquote><p>Application Gateway가 퍼블릭 진입점이면 DNS를 수동으로 또는 Azure DNS에서 직접 <code>api.contoso.com → Application Gateway public IP</code>로 관리할 수도 있습니다. 백엔드 구간의 Host를 그대로 유지하세요. Envoy가 해당 호스트 이름을 일치시키게 하는 것만을 위해 external-dns 인스턴스가 필요한 것은 아닙니다.</p><h2 id="cutover">11. 마이그레이션 검증 및 안전한 전환</h2><ol><li>Ingress 호스트, 경로, TLS 참조, 재작성, 리디렉션, 제한 시간, 요청 제한, CORS, DNS 소유권 및 원본 IP 제어 목록을 작성하세요.</li><li>변환 보조 도구로 <a href="https://github.com/kubernetes-sigs/ingress2gateway">ingress2gateway</a>를 사용하되 생성된 모든 리소스와 지원되지 않는 주석을 수동으로 검토하세요.</li><li>기존 진입점을 변경하지 않고 새 컨트롤러와 병렬 프라이빗 Gateway를 배포하세요. Gateway 및 HTTPRoute 조건, 백엔드 연결성, 프로브 및 인증서 신뢰를 확인하세요.</li><li>호스트/경로 라우팅, 슬래시 경계, 리디렉션, 대용량 요청, 장기 연결, 제한 시간, 요청 속도 제한 및 원본 IP 권한 부여를 테스트하세요. 롤링 업데이트 시 드레이닝과 독립적인 HPA 동작을 검증하세요.</li><li>이전 진입점으로 롤백할 수 있도록 DNS 또는 Application Gateway 백엔드 변경을 계획하세요. 프로덕션 동작을 검증할 때까지 이전 컨트롤러와 리소스를 유지하고, 해당 NGINX 지원 기한 전에 마이그레이션하세요.</li><li>DNS와 인증서 책임을 명시적으로 이전하고, 더 이상 트래픽을 처리하지 않는다고 확인한 후에만 미사용 리소스를 폐기하세요.</li></ol><h2 id="references">참고 자료 및 원본의 한계</h2><ul><li><a href="https://pixelrobots.co.uk/2026/02/installing-envoy-gateway-on-aks-three-ways-to-configure-your-gateway/">AKS에 Envoy Gateway 설치: 세 가지 배포 패턴</a></li><li><a href="https://gateway.envoyproxy.io/news/releases/notes">Envoy Gateway 릴리스 정보</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing">AKS Application Routing</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing-nginx-configuration">NGINX 구성</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/app-routing-dns-ssl">NGINX DNS 및 TLS 통합</a></li><li><a href="https://blog.aks.azure.com/2025/11/13/ingress-nginx-update">Ingress NGINX 지원 종료 업데이트</a></li></ul><p>원본은 프라이빗 LB 패턴을 완전하게 보여주지만 퍼블릭 LB나 Private Link Service 매니페스트는 제공하지 않습니다. 예시 user/order/API 경로용 백엔드 Service, 완전한 external-dns ID 구성 또는 프로덕션 성능 테스트도 제공하지 않습니다. 버전을 고정한 예제는 문서화된 기준 구성으로 유지하며 현재 최신 릴리스로 표시하지 않습니다.</p>

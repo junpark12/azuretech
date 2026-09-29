@@ -1,0 +1,192 @@
+<h2 id="scope">범위와 읽기 안내</h2>
+<p>이 문서는 2026년 7~8월의 ASE v3 조사를 종합합니다. 원래 목표는 프런트 엔드 CPU 및 메모리 메트릭에 반응하는 것이었습니다. 그러나 조사에서 메트릭 샘플 누락과 상당한 확장 지연이 확인되어, 예약에 따른 선제적 용량 확보로 방향을 바꿨습니다. 초기 실험용 런북을 구현하기 전에 최종 설계 방향을 읽으세요.</p>
+<blockquote><strong>중요: 이 문서는 관찰에 기반한 분석이며 Microsoft의 공식 지침이 아닙니다.</strong> 측정값, 청구에 관한 추론, 포털 동작 및 API 특성은 특정 테스트 환경을 설명하며 다른 환경에 적용된다는 보장이 없습니다. 특히 프런트 엔드 가격, 청구 공식 및 청구 동작 해석은 관찰 데이터에 근거하며 Microsoft의 공식 가격 발표, 계약상 약속 또는 SLA가 아닙니다. 아키텍처나 예산을 결정하기 전에 최신 문서와 가격, Microsoft와 체결한 계약을 확인하세요.</blockquote>
+<p>테스트 구성은 East US의 외부 VIP ASE v3, Linux I1v2 작업자, Node.js 22 LTS 샘플 애플리케이션, 시스템 할당 관리 ID를 사용하는 Automation 계정이었습니다. 서비스가 보고한 프런트 엔드 크기는 <code>Standard_D2d_v4</code>였습니다. 실제 환경 식별자는 변수로 대체했습니다.</p>
+<pre><code class="language-bash"># Supply these values in your own shell; do not commit them.
+: "${SUBSCRIPTION_ID:?Set SUBSCRIPTION_ID}"
+: "${RESOURCE_GROUP:?Set RESOURCE_GROUP}"
+: "${ASE_NAME:?Set ASE_NAME}"
+: "${LOCATION:?Set LOCATION}"
+az account set --subscription "$SUBSCRIPTION_ID"
+ASE_ID="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Web/hostingEnvironments/$ASE_NAME"
+
+az quota show --resource-name I1v2 \
+  --scope "/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Web/locations/$LOCATION" \
+  --query "properties.limit.value" -o tsv</code></pre>
+<p>ASE를 만들기 전에 할당량을 확인하세요. 최초로 시도한 East US 2에는 Isolated v2 할당량이 없었고, 할당량 업데이트는 <code>QuotaNotAvailableForResource</code>를 반환했습니다. 대신 할당량이 있는 사용 가능한 지역을 사용했습니다. 지역에서 SKU를 제공한다는 사실만으로 특정 구독에 사용 가능한 할당량이 있다고 판단할 수는 없습니다. 비어 있는 ASE에도 최소 요금이 발생할 수 있습니다.</p>
+
+<h2 id="signals">올바른 리소스와 신호 선택</h2>
+<table><thead><tr><th>리소스 유형</th><th>나타내는 대상</th><th>관련 신호</th></tr></thead><tbody>
+<tr><td><code>Microsoft.Web/hostingEnvironments</code></td><td>ASE 인프라와 프런트 엔드</td><td><code>TotalFrontEnds</code>. 다른 정의는 샘플 없이 존재할 수 있음</td></tr>
+<tr><td><code>Microsoft.Web/serverfarms</code></td><td>App Service 요금제 작업자</td><td>CPU, 메모리, HTTP 큐</td></tr>
+<tr><td><code>Microsoft.Web/sites</code></td><td>개별 애플리케이션</td><td>요청 수와 응답 시간</td></tr>
+</tbody></table>
+<p>ASE 메트릭 정의에는 <code>CpuPercentage</code>, <code>MemoryPercentage</code>, <code>DiskQueueLength</code>, <code>TotalFrontEnds</code>가 나열되어 있었습니다. 72개의 1시간 구간 중 CPU와 메모리에 실제 샘플이 있는 구간은 0개였지만, <code>TotalFrontEnds</code>에는 72개 구간 모두 샘플이 있었습니다. <code>Instance</code> 차원으로 쿼리해도 CPU 시계열은 나오지 않았습니다.</p>
+<p>약 180 요청/초로 12분 동안 부하를 가하자 애플리케이션 요청 수와 응답 시간 샘플, 작업자 CPU 12-14%, 작업자 메모리 30-31%, 작업자 HTTP 큐 0이 확인되었습니다. ASE CPU와 메모리에는 여전히 샘플이 없었습니다. 원문에서는 Linux 소켓/TCP 메트릭 샘플 누락도 관찰했습니다. 메트릭 정의가 있다고 해서 해당 배포에서 그 메트릭을 내보낸다는 증거로 간주하지 마세요.</p>
+<pre><code class="language-bash">az monitor metrics list-definitions --resource "$ASE_ID" \
+  --query "[].{name:name.value,unit:unit}" -o table
+
+az monitor metrics list --resource "$ASE_ID" \
+  --metrics CpuPercentage MemoryPercentage TotalFrontEnds \
+  --interval PT1M --aggregation Average Count -o json
+
+: "${START_UTC:?Set START_UTC to an ISO 8601 UTC timestamp}"
+: "${END_UTC:?Set END_UTC to an ISO 8601 UTC timestamp}"
+az rest --method get \
+  --url "https://management.azure.com${ASE_ID}/providers/Microsoft.Insights/metrics?api-version=2023-10-01&amp;metricnames=CpuPercentage,TotalFrontEnds&amp;timespan=${START_UTC}/${END_UTC}&amp;interval=PT1M&amp;aggregation=Average,Count"</code></pre>
+<h3>누락은 0이 아님</h3>
+<p>원문에서는 누락 구간이 <code>average: 0, count: 0</code>으로 표시되는 것을 확인했습니다. 호환되는 메트릭 쿼리에 <code>Count</code>를 포함하고 <code>count &gt; 0</code>인 점만 사용하세요. 평균이 null이 아닌지만 필터링하면 누락된 측정값을 유휴 용량으로 오인하여 위험한 축소를 유발할 수 있습니다. 메트릭이 지원하는 집계를 사용하세요. 애플리케이션 요청량은 합계이며 작업자 CPU처럼 평균이 아닙니다.</p>
+<p>애플리케이션 <code>Requests</code>를 수요의 대리 지표로 사용하고, 작업자 CPU, 메모리, <code>HttpQueueLength</code>는 보조 신호로 활용하세요. 작업자 CPU는 프런트 엔드 CPU가 아닙니다. <code>AverageResponseTime</code>은 애플리케이션 사용 환경 저하를 나타낼 수 있지만 이것만으로 프런트 엔드 병목을 분리해 판단할 수는 없습니다.</p>
+<h3>포털에서 확인</h3>
+<p>관찰 당시 포털의 ASE 블레이드에는 메트릭 항목이 없었습니다. <strong>모니터 → 메트릭 → 범위 선택</strong>을 열고 해당 리소스 그룹을 선택한 다음, <strong>App Service Environments</strong>로 필터링하여 ASE를 선택하세요. <strong>총 프런트 엔드 수</strong>를 그래프로 표시합니다. 최소값을 재설정한 후 선이 평평하게 유지되어 구성한 하한이 지속됨을 확인하는 데 도움이 되었습니다. CPU 그래프가 없다는 것을 CPU가 0이라는 뜻으로 해석하면 안 됩니다.</p>
+
+<h2 id="capacity-api">구성된 용량, 준비 완료로 보고된 용량, 실제 용량</h2>
+<pre><code class="language-bash">az rest --method get \
+  --url "https://management.azure.com${ASE_ID}/configurations/ingress?api-version=2023-12-01" \
+  --query "properties.{min:minimumInstanceCount,ready:readyInstanceCount,state:provisioningState}" -o json
+
+az rest --method get \
+  --url "https://management.azure.com${ASE_ID}/multiRolePools/default?api-version=2023-12-01" \
+  --query "properties.instanceNames" -o json</code></pre>
+<table><thead><tr><th>값</th><th>이 조사에서의 해석</th></tr></thead><tbody>
+<tr><td><code>minimumInstanceCount</code></td><td>구성된 하한이며 순간적인 인스턴스 수가 아닙니다.</td></tr>
+<tr><td><code>readyInstanceCount</code></td><td>유용한 선행 신호이지만 관찰된 인스턴스 목록보다 먼저 증가했습니다.</td></tr>
+<tr><td><code>multiRolePools/default → instanceNames</code></td><td>실제 수렴을 측정하는 데 사용한 인스턴스 목록입니다. 주소를 공개하지 마세요.</td></tr>
+<tr><td><code>TotalFrontEnds</code></td><td>추세와 경고에 유용하지만 집계, 수집 지연 및 누락 구간이 정밀도에 영향을 줍니다.</td></tr>
+<tr><td><code>provisioningState</code></td><td>새로 요청한 프런트 엔드를 사용할 수 있다는 충분한 증거가 아닙니다.</td></tr>
+</tbody></table>
+<p>2→4 요청 후 4분 시점에 <code>provisioningState</code>는 이미 <code>Succeeded</code>였지만, 14분 시점에도 보고된 준비 완료 수는 2였습니다. 다른 2→3 실험에서는 준비 완료 수가 8분에 3, 9분에 4가 되었지만 실제 목록에는 여전히 인스턴스가 2개였습니다. 실제 용량은 약 21분에 4에 도달했고 약 40분에 3으로 안정화되었습니다.</p>
+<p>따라서 <code>provisioningState == Succeeded</code>만을 기준으로 한 보호 조건은 충분하지 않습니다. 준비 완료 수와 최소값의 불일치 여부 역시 최종 수렴 확인 방법이 아닙니다. 실제 인스턴스 목록을 구성된 하한 및 준비 완료 신호와 함께 사용하세요. 준비 완료 수가 실제 용량보다 크면 플랫폼이 이미 확장 중일 수 있으므로 목표값을 반복해서 올리지 마세요.</p>
+<p>Ingress 응답에는 마지막 변경 시각이 없습니다. 명시적인 쿨다운에는 Automation 변수 같은 외부 상태가 필요합니다. 원문에서는 확장 중 ingress 및 역할 풀 응답이 일시적으로 비는 현상을 확인했습니다. 빈 응답을 인스턴스 0개로 해석하지 말고, 명확한 오류로 처리하거나 운영 경고를 남기고 보류하세요.</p>
+<p>테스트한 <code>capacities/compute</code> 및 <code>capacities/virtualip</code> 엔드포인트는 HTTP 400을 반환했고, <code>workerPools</code>은 이 ASE v3 시나리오에서 사용할 수 없었습니다. 레거시 <code>frontEndScaleFactor</code>는 여기에서 설명하는 ASE v3 제어 항목이 아닙니다.</p>
+
+<h2 id="change-minimum">최소값을 안전하게 변경</h2>
+<pre><code class="language-bash"># This changes capacity and can incur charges. Review the value first.
+az rest --method put \
+  --url "https://management.azure.com${ASE_ID}/configurations/ingress?api-version=2023-12-01" \
+  --headers "Content-Type=application/json" \
+  --body '{"properties":{"minimumInstanceCount":3}}'</code></pre>
+<p>원문에서는 <code>2022-09-01</code> PUT이 성공한 것처럼 보였다가 약 35초 후 되돌아가는 현상을 확인했습니다. 더 완전한 요청 본문을 포함해도 해결되지 않았고 활동 로그에도 유용한 실패 정보가 없었습니다. 해당 환경에서는 <code>2023-12-01</code> 또는 <code>2024-04-01</code>를 사용한 PUT 요청이 유지되었습니다. 따라서 이 예제에서는 <code>2023-12-01</code>을 사용합니다. 배포에서 지원하는 API 버전을 확인하고 GET을 반복하여 결과가 안정적인지 확인하세요. 초기 읽기에서는 이전 값이 반환되기도 했습니다.</p>
+<table><thead><tr><th>작업</th><th>관찰된 경과 시간</th><th>동작</th></tr></thead><tbody>
+<tr><td>2 → 4</td><td>38분</td><td>실제 수가 3에서 멈추지 않고 목표값으로 바로 증가했습니다.</td></tr>
+<tr><td>2 → 3</td><td>20분</td><td>일시적으로 목표를 초과하는 현상이 관찰되었습니다.</td></tr>
+<tr><td>3 → 4</td><td>35분</td><td>증가 폭이 더 작아도 지연은 비슷했습니다.</td></tr>
+<tr><td>4 → 2, 부하 후</td><td>15분에 4 → 3, 4시간 15분에 3 → 2</td><td>단계적으로 축소되었습니다.</td></tr>
+<tr><td>4 → 2, 유휴 실험</td><td>3시간 36분에 4 → 3, 6시간 34분까지 3 → 2는 발생하지 않음</td><td>확정적인 축소 완료 시한이 없었습니다.</td></tr>
+</tbody></table>
+<p>원문에서는 약 30분의 판단 주기에 약 10분의 실행 시간이 더해진다고 추론했습니다. 관찰한 환경에서는 계획 시 최소 40분의 여유를 권장했지만, 모든 환경에 통용되는 상한을 보장한 것은 아닙니다. 명시적 PUT도 플랫폼 루프를 우회하지 않았습니다. 작은 증가를 반복하면 지연이 누적될 수 있으므로 처음부터 충분한 목표값을 선택하세요.</p>
+<p>하한을 올리면 용량을 요청하지만, 내리면 플랫폼이 용량을 해제하도록 허용할 뿐입니다. 두 작업은 대칭적이지 않습니다. 하한 2는 60시간 동안 245개 샘플에서 바뀌지 않았습니다. 이벤트가 끝나면 과거 최고 설정값을 그대로 두지 말고 구성된 하한을 낮추세요. 느린 단계적 축소가 연결에 영향이 전혀 없다는 증거는 아닙니다. 장기 연결과 백그라운드 워크로드를 고려하세요.</p>
+
+<h2 id="billing">청구 관찰 결과와 비용 제어</h2>
+<blockquote><strong>비공식 가격 관찰 결과이며 보장되지 않습니다.</strong> 아래 공식, 가격 및 과금 시작·종료 시점에 대한 결론은 2026년 7~8월 청구 데이터와 소매 가격 비교에서 추론했습니다. 관찰한 요율이 공개 소매 요율과 일치하더라도 프런트 엔드 청구에 대한 해석은 Microsoft의 공식 가격 정책이 아닙니다. 이 결과를 견적이나 향후 요금에 대한 보장으로 간주하지 마세요. 실제 요금은 지역, SKU, 서비스 변경, 통화, 할인 및 계약에 따라 달라질 수 있습니다. 최신 공식 가격과 적용 계약을 확인하고 불명확한 청구 동작은 Microsoft에 문의하세요.</blockquote>
+<table><thead><tr><th>리소스 ID 접미사</th><th>원문의 해석</th></tr></thead><tbody>
+<tr><td><code>isolatedv2mininstancefee_for_{ASE_NAME}</code></td><td>비어 있는 ASE의 최소 요금입니다.</td></tr>
+<tr><td><code>isolatedv2frontendmininstancefee_for_{ASE_NAME}</code></td><td>2개를 초과하도록 구성한 프런트 엔드 최소값에 대한 추가 요금입니다.</td></tr>
+</tbody></table>
+<p>관찰된 East US Linux I1v2 작업자 가격은 시간당 USD 0.386이었습니다. 프런트 엔드 요금은 Windows I1v2 소매 요율인 시간당 USD 0.547과 일치했습니다. 원문의 청구 데이터가 시사한 공식은 다음과 같습니다.</p>
+<pre><code>Observed additional front-end cost
+  = max(minimumInstanceCount - 2, 0) × configured hours × regional rate</code></pre>
+<p>최소값 3을 하루 종일 유지하면 청구 단위 24개와 USD 13.128이 발생했습니다. 잠시 최소값 3/4를 설정한 날에는 청구 단위 2개와 USD 1.094가 발생했습니다. 두 행의 합계는 26단위와 USD 14.222였습니다. 원문에서는 청구가 순간적으로 관찰한 수가 아니라 구성한 최소값을 따른다고 추론했습니다. 하한을 내린 후에도 실제 용량은 몇 시간 동안 높게 유지되었지만 그에 해당하는 추가 프런트 엔드 단위는 발생하지 않았습니다. 관찰 당시 플랫폼의 일시적인 목표 초과 역시 추가 단위를 발생시키지 않았습니다.</p>
+<table><thead><tr><th>구성된 최소값</th><th>East US, 30일(USD, 근삿값)</th><th>Korea Central, 30일(KRW, 근삿값)</th></tr></thead><tbody>
+<tr><td>2</td><td>추가 0</td><td>추가 0</td></tr>
+<tr><td>3</td><td>394</td><td>633,118</td></tr>
+<tr><td>5</td><td>1,182</td><td>1,899,353</td></tr>
+<tr><td>10</td><td>3,151</td><td>5,064,941</td></tr>
+<tr><td>20</td><td>7,089</td><td>11,396,117</td></tr>
+</tbody></table>
+<p>원문의 Korea Central 소매 요율은 프런트 엔드 단위·시간당 USD 0.573 또는 KRW 879.33, Linux 작업자·시간당 USD 0.412 또는 KRW 632.26이었습니다. 통화별 소매 가격은 사용자가 단순히 환율을 적용한 값이 아닙니다. 위 합계는 제시된 요율과 720시간을 사용하고 마지막에만 반올림했으며, 작업자 및 기타 서비스는 제외합니다.</p>
+<p><strong>Cost Management + Billing → 비용 분석</strong>에서 <strong>리소스</strong>별로 그룹화하고 전체 리소스 ID 도구 설명을 확인하세요. 프런트 엔드와 작업자 요금이 <code>I1 v2 App</code> 미터를 공유할 수 있으므로 미터나 미터 범주만으로 그룹화하면 차이가 가려질 수 있습니다. 프런트 엔드 청구 리소스는 별도 요금 항목이더라도 ASE의 이름과 리소스 유형을 표시할 수 있습니다.</p>
+<pre><code class="language-bash"># Public retail-price endpoint; no subscription identifiers required.
+curl --fail --silent --show-error \
+  "https://prices.azure.com/api/retail/prices?\$filter=serviceName%20eq%20'Azure%20App%20Service'%20and%20armRegionName%20eq%20'eastus'%20and%20contains(meterName,'I1%20v2')"</code></pre>
+<p>소매 가격 응답에 다음 페이지 링크가 있으면 페이지를 계속 조회하고 해당 SKU와 가격 유형을 선택하세요. Cost Management API 호출에는 속도 제한이 있으므로 429 응답을 처리하고 안내된 지연 후 다시 시도하세요.</p>
+
+<h2 id="automation">초기 메트릭 기반 Automation 설계</h2>
+<p>원문은 게시된 PowerShell 런북을 유지했지만 시간 조사 후 반응형 일정을 비활성화했습니다. 런북 소스 자체는 저장소에 없습니다. 이 절은 보고된 동작을 설명하며 다운로드 가능하거나 프로덕션에 바로 적용할 수 있는 구현이 아닙니다.</p>
+<p>인증에는 <code>Connect-AzAccount -Identity</code>를 사용했습니다. ASE 범위에 Monitoring Reader를 할당했습니다. Ingress 쓰기에는 <strong>App Service Environment Contributor</strong>가 필요했고 Website Contributor만으로는 <code>Microsoft.Web/hostingEnvironments/configurations/write</code> 권한이 없었습니다. 실험에는 앱/요금제 조작과 초기 모니터링 실험을 위한 더 광범위한 리소스 그룹 역할도 있었습니다. 사용하지 않는 광범위한 할당을 프로덕션에 그대로 복사하지 마세요.</p>
+<pre><code class="language-bash">: "${AUTOMATION_PRINCIPAL_ID:?Set the managed identity principal ID}"
+az role assignment create \
+  --assignee-object-id "$AUTOMATION_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "App Service Environment Contributor" --scope "$ASE_ID"</code></pre>
+<ol>
+<li>관리 ID로 인증하고 구독을 선택합니다.</li>
+<li><code>multiRolePools/default</code>에서 실제 프런트 엔드 수와 ingress 구성을 읽습니다.</li>
+<li>프로비저닝이 완료되지 않았거나 실제 수가 하한보다 작거나 준비 완료 수가 실제 수보다 크면 보류합니다. 프로비저닝 상태만 신뢰하지 마세요.</li>
+<li>ASE의 애플리케이션과 요금제를 열거하고 애플리케이션 요청을 집계하며 작업자 CPU, 메모리 및 큐 신호의 최대값을 검사합니다. 누락 샘플은 제외합니다.</li>
+<li>프런트 엔드당 분당 요청 수를 계산합니다. 유효한 신호가 없으면 현재 용량을 유지하고 운영 진단을 출력합니다.</li>
+<li>임계값 로직, 범위 제한 및 선택적 모의 실행 출력을 적용합니다. 축소에는 낮은 신호가 확인되어야 하며, 데이터 누락을 근거로 축소해서는 안 됩니다.</li>
+<li>검토한 목표 하한이 현재 값과 다를 때만 ingress에 씁니다.</li>
+</ol>
+<table><thead><tr><th>매개 변수</th><th>원문 기본값</th></tr></thead><tbody>
+<tr><td>확장 / 축소 기준 프런트 엔드당 분당 요청 수</td><td>6,000 / 1,500</td></tr>
+<tr><td>작업자 CPU / 메모리 확장 임계값</td><td>70% / 75%</td></tr>
+<tr><td>작업자 HTTP 큐 확장 임계값</td><td>10</td></tr>
+<tr><td>하한 / 상한</td><td>2 / 10</td></tr>
+<tr><td>확장 / 축소 증감 단위</td><td>2 / 1</td></tr>
+<tr><td>조회 기간</td><td>5분</td></tr>
+<tr><td>축소 활성화</td><td>False, 명시적 동의 필요</td></tr>
+<tr><td>WhatIfOnly</td><td>용량 쓰기를 수행하지 않는 모의 실행 모드</td></tr>
+</tbody></table>
+<p>보고된 모의 실행에서는 변경 없음, 임계값 근처의 변경 없음, 3→5 확장, 축소 억제, 명시적으로 허용한 3→2 축소를 시험했습니다. 이는 원문의 과거 테스트이며 이 사이트를 위해 수행한 검증이 아닙니다. PowerShell 도우미에서 <code>Write-Output</code>으로 작성한 진단은 스칼라 반환값을 오염시킬 수 있습니다. <code>Write-Verbose</code> 같은 별도 진단 스트림을 사용하고 명확한 반환 규약을 유지하세요.</p>
+<p>과거 기록은 Automation REST API <code>2023-11-01</code>을 통한 초안 업로드, 게시, 작업 호출, 출력/스트림 검사 및 15분 일정 실험을 설명합니다. 이후 기록에서는 반응형 일정을 명시적으로 비활성화합니다. 원문 안에서는 이 후속 상태를 최종 상태로 보세요. 현재 지원하는 일정 간격을 확인하고 시간당 1회보다 잦은 실행에는 지원되는 트리거를 사용하세요. 과거의 <code>frequency: Minute</code> 요청이 프로덕션에서 지원되는 일정 규약이라고 가정하지 마세요.</p>
+<pre><code class="language-bash">: "${AUTOMATION_ACCOUNT:?Set AUTOMATION_ACCOUNT}"
+: "${RUNBOOK_NAME:?Set RUNBOOK_NAME}"
+: "${JOB_ID:?Set an existing job ID to inspect}"
+AA_URL="https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Automation/automationAccounts/$AUTOMATION_ACCOUNT"
+az rest --method get --url "$AA_URL/runbooks/$RUNBOOK_NAME?api-version=2023-11-01" \
+  --query "properties.{state:state,params:parameters}" -o json
+az rest --method get --url "$AA_URL/jobs/$JOB_ID?api-version=2023-11-01" \
+  --query "properties.{status:status,exception:exception}" -o json
+az rest --method get --url "$AA_URL/jobs/$JOB_ID/output?api-version=2023-11-01"
+az rest --method get --url "$AA_URL/jobs/$JOB_ID/streams?api-version=2023-11-01"</code></pre>
+
+<h2 id="proactive-design">조사에서 권장한 방향</h2>
+<p>요청한 프런트 엔드가 수십 분 후에 도착한다면, 수분 내에 급증하는 트래픽을 반응형 확장으로 안정적으로 흡수할 수 없습니다. 제안된 대안은 안정적인 기본값, 선택적 일일 시간대, 명시적 이벤트 재정의를 정기적으로 조정하는 목표 상태 일정이었습니다.</p>
+<pre><code class="language-json">{
+  "timeZone": "Korea Standard Time",
+  "default": 2,
+  "daily": [
+    {"days": "Mon-Fri", "from": "08:00", "to": "20:00", "min": 3}
+  ],
+  "overrides": [
+    {
+      "start": "2030-01-15T08:00",
+      "end": "2030-01-15T13:00",
+      "min": 4,
+      "reason": "Example event",
+      "owner": "EVENT_OWNER"
+    }
+  ]
+}</code></pre>
+<p>이는 설명용 스키마이며 활성 일정이나 실행 가능한 구현이 아닙니다. 사용 전에 예제 이벤트 날짜와 담당자를 바꾸세요.</p>
+<ul>
+<li>요구 사항이 겹치면 마지막 쓰기 우선 방식이 아니라 요청된 하한의 최대값을 적용하세요.</li>
+<li>선행 시간 설정을 자동으로 적용하세요. 관찰에 따른 계획 모델에서 40분의 여유는 08:00 이벤트에 대해 07:20까지 요청해야 한다는 뜻입니다. 자신의 환경에 적합한 여유 시간을 측정하세요.</li>
+<li>만료된 재정의는 무시하고 오래된 항목에는 경고하며 이벤트 종료 후 최소값을 낮추세요.</li>
+<li>비용이 큰 입력 실수를 방지하도록 명시적인 최대 허용 설정값을 적용하세요.</li>
+<li>일정 시간대를 명시적으로 변환하세요. Automation 작업은 UTC로 실행됩니다.</li>
+<li>구성이 잘못되면 현재 용량을 유지하고 운영자에게 경고하세요. 이벤트 중에 아무 알림 없이 기본값으로 재설정하면 안 됩니다.</li>
+<li>반복 실행되는 조정기를 사용해 호출 실패를 재시도하되 확장 중에 충돌하는 변경은 피하세요.</li>
+</ul>
+<table><thead><tr><th>구성 저장소</th><th>원문의 평가</th></tr></thead><tbody>
+<tr><td>버전이 관리되는 단일 JSON Blob</td><td>전체 구성을 읽기 쉽고 이력과 롤백을 지원하며, 검토를 거친 운영 설계에 선호되었습니다.</td></tr>
+<tr><td>Automation 변수</td><td>추가 리소스가 없어 실험에 유용하지만 한 줄 편집기는 입력 오류를 늘릴 수 있습니다.</td></tr>
+<tr><td>Table Storage</td><td>이벤트별 행은 편리하지만 전체 구성을 검토하기에는 덜 편리합니다.</td></tr>
+<tr><td>App Configuration</td><td>구성 관리 전용 서비스이며 별도 서비스 비용이 발생합니다.</td></tr>
+<tr><td>Git과 파이프라인</td><td>검토와 승인 이력이 있으며 긴급 업데이트 지연을 고려해야 합니다.</td></tr>
+</tbody></table>
+<p>원문에 남은 작업은 대체 런북 구현, 선행 시간 동작 검증, 저장소 선택, 부하 상태의 시간 측정 반복, 확장 중 두 번째 PUT이 진행 중 작업을 재설정하거나 변경하는지 확인하는 것이었습니다. 이 미완료 항목 중 어떤 것도 여기서 완료된 것으로 제시하지 않습니다.</p>
+
+<h2 id="troubleshooting">배포 및 문제 해결에서 얻은 교훈</h2>
+<ul>
+<li><strong>할당량:</strong> 배포 전에 대상 지역을 확인하세요. 지원되는 지역이라도 사용 가능한 할당량이 0일 수 있습니다.</li>
+<li><strong>SCM 연결 가능 여부:</strong> 네트워크 시간 초과와 인증 응답을 구분하세요. ASE 네트워킹 요구 사항을 검토하고 필요한 원본/포트로 액세스를 제한하세요. 실험실의 광범위한 인터넷 허용 규칙을 복사하지 마세요.</li>
+<li><strong>런타임:</strong> <code>az webapp list-runtimes --os-type linux</code>를 확인하세요. 원문 환경에서는 Node 20이 거부되어 지원 옵션 중 Node 22 LTS를 선택했습니다.</li>
+<li><strong>중지된 앱:</strong> 이전 시작 실패로 애플리케이션이 중지된 상태에서도 배포는 성공할 수 있습니다. 애플리케이션 상태와 시작 로그를 확인하세요.</li>
+<li><strong>Kudu 401:</strong> 의도한 배포 인증 방법을 확인하세요. 인증된 배포 실패를 우회하려고 기본 게시 자격 증명을 자동으로 활성화하지 마세요.</li>
+<li><strong>Ingress 403:</strong> Website Contributor로 충분하다고 가정하지 말고 관리 ID의 ASE 범위 쓰기 권한을 확인하세요.</li>
+<li><strong>메트릭 샘플 없음:</strong> 지원되는 앱/요금제 신호를 수집하고 누락 데이터를 기록하세요. 0으로 채운 공백을 근거로 축소하지 마세요.</li>
+<li><strong>부하 형태:</strong> 프런트 엔드는 요청을 프록시합니다. CPU를 소모하는 엔드포인트는 주로 작업자에 부하를 주므로 프런트 엔드 압력을 분리하지 못합니다. 테스트 권한이 있는 환경에서만 부하 테스트를 수행하세요.</li>
+</ul>
+<p>과거 부하 실행에서는 HTTP 200 응답 126,458개, 중앙값 지연 0.81초, 약 180 요청/초가 보고되었습니다. 언급된 샘플 애플리케이션의 상태, CPU 소모, 메모리 할당 엔드포인트와 배포 패키지는 저장소에 없습니다. 원본 스크린샷, 지원 기록 및 환경 주소는 의도적으로 배포하지 않습니다.</p>

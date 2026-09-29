@@ -1,0 +1,100 @@
+{
+  "slug": "ai-gateway-existing",
+  "category": "AI",
+  "title": "기존 APIM을 Foundry AI 게이트웨이로 사용하기: 백엔드 풀, 관리 ID, 재시도 및 모니터링",
+  "summary": "기존 APIM Standard v2와 Foundry 리소스에 프라이빗 백엔드 액세스, 횟수가 제한된 429 재시도 및 개인정보 보호를 고려한 Application Insights 진단을 구성합니다.",
+  "bodyFile": "ai-gateway-existing.html",
+  "sourceDocuments": [
+    "기존 APIM의 Microsoft Foundry AI 게이트웨이 — 개요 및 선택된 패키지",
+    "기존 APIM의 백엔드 풀 및 정책 적용",
+    "APIM과 Application Insights 통합",
+    "게이트웨이, Legacy 사용량 및 모니터링 단위 테스트 참조 범위"
+  ],
+  "downloads": [
+    {
+      "path": "downloads/ai-gateway-existing/single-backends.json",
+      "label": "single-backends.json",
+      "description": "TLS 검증과 백엔드별 429 회로 차단기를 포함하며 민감 정보를 제거한 Single 백엔드 정의 두 개입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/pool.json",
+      "label": "pool.json",
+      "description": "원문의 쌍 배열 형식으로 매개 변수화한 동일 우선순위, 동일 가중치 백엔드 풀입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/chat.xml",
+      "label": "chat.xml",
+      "description": "MI 인증, 횟수가 제한된 재시도 및 메타데이터 추적을 포함한 원문 기반의 완전한 v1 Chat 작업 정책입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/legacy-chat.xml",
+      "label": "legacy-chat.xml",
+      "description": "매개 변수화한 배포 경로와 JSON 성공 응답의 토큰 추적을 포함한 원문 기반의 완전한 Legacy 정책입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/responses.xml",
+      "label": "responses.xml",
+      "description": "클라이언트의 저장 및 대화 필드를 유지하는 원문 기반의 완전한 Responses 정책입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/legacytest.http",
+      "label": "legacytest.http",
+      "description": "원문의 높은 추론 수준과 10,000토큰 한도를 유지한 수동 Legacy 요청입니다. 사용 전에 비용을 검토하세요."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/v1test.http",
+      "label": "v1test.http",
+      "description": "환경에서 제공하는 APIM 구독 키를 사용하는 매개 변수화된 수동 v1 Chat 요청입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/responsetest.http",
+      "label": "responsetest.http",
+      "description": "클라이언트의 저장 여부 선택을 명시한 매개 변수화된 단일 턴 Responses 요청입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/responsetest2.http",
+      "label": "responsetest2.http",
+      "description": "합성 테스트 데이터와 세 개의 요청을 사용하는 원문 기반 대화 기록 재전송 및 응답 ID 비교입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/monitoring.kql",
+      "label": "monitoring.kql",
+      "description": "범위별 안내를 포함한 원문 기반 요청, 종속성, 시도 및 Legacy 토큰 쿼리 일곱 개입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/logger.json",
+      "label": "logger.json",
+      "description": "연결 문자열 자리 표시자를 포함한 관리 ID 기반 Application Insights 로거 템플릿입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/diagnostic.json",
+      "label": "diagnostic.json",
+      "description": "원문의 설정 표와 테스트 어설션을 바탕으로 구성했으며 실행하지 않은 진단 템플릿입니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/test_gateway.py",
+      "label": "test_gateway.py — 참조 전용",
+      "description": "민감 정보를 제거한 원본 게이트웨이 테스트 31개의 참조 자료이며 단독 실행할 수 없습니다. POC_SOURCE_ROOT를 통해 원본 poclib/configure/apply/validate 도우미, 구성 및 템플릿이 필요합니다. 클라우드에서 실행했다고 주장하지 않습니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/test_legacy_usage.py",
+      "label": "test_legacy_usage.py — 참조 전용",
+      "description": "민감 정보를 제거한 원본 Legacy 사용량 테스트 다섯 개의 참조 자료이며 단독 실행할 수 없습니다. test_gateway.py와 제공되지 않은 원본 legacy_usage/poclib/정책 도우미 및 템플릿이 필요합니다. 클라우드에서 실행했다고 주장하지 않습니다."
+    },
+    {
+      "path": "downloads/ai-gateway-existing/test_monitoring.py",
+      "label": "test_monitoring.py — 참조 전용",
+      "description": "민감 정보를 제거한 원본 모니터링 테스트 여섯 개의 참조 자료이며 단독 실행할 수 없습니다. test_gateway.py와 제공되지 않은 원본 monitoring/poclib/구성 도우미 및 템플릿이 필요합니다. 클라우드에서 실행했다고 주장하지 않습니다."
+    }
+  ],
+  "omissions": [
+    "원본 Python 테스트 세 개는 제외하지 않고 민감 정보를 제거한 참조 전용 다운로드로 포함했습니다. 원본 도우미 모듈, 구성, 소유권 상태 및 렌더링 템플릿은 여전히 제공되지 않으며 파일은 단독 실행할 수 없습니다. 헤더, 설명 및 본문에 종속성을 명시했고 POC_SOURCE_ROOT를 명시적으로 요구합니다. 원본 테스트 메서드 42개를 모두 실행하지 않고 보존했습니다.",
+    "원본 스크린샷은 선택된 원본 폴더에서 이미 제외되어 있었습니다. 트랜잭션 스크린샷에 대한 참조는 문서화된 관찰 내용으로만 표현했습니다. 이미지, 바이너리 또는 포함된 메타데이터는 공개하지 않습니다.",
+    "원본 패키지 자체에서 전체 인프라/스크립트, 매개 변수, 정책 템플릿, 모니터링 내보내기, 프라이빗 엔드포인트/구독 간 상세 정보, 별도 비용/결과/테스트 절차 문서 및 미디어를 제외합니다. 제공되지 않은 콘텐츠에 링크하거나 내용을 만들어 내지 않고 존재만 언급했습니다.",
+    "반복되는 단계별 설정 설명과 중복 XML 설명은 최종 상태와 과거 상태의 구분, 드리프트 방지 장치, 명령 옵션 이력, 테스트 및 미검증 항목을 유지하며 통합했습니다.",
+    "구체적인 환경 식별자, 계정/리소스 이름, 배포 별칭, 사용자 경로, 저장된 응답 ID 및 자격 증명은 매개 변수화했습니다. Python 테스트는 실제 배포 내보내기가 아니라 합성 픽스처 이름과 일반적인 도우미 계약 레이블을 유지합니다. 더미 계측 키 픽스처는 명시적 자리 표시자로 대체했습니다. 공개 Azure 대상, 역할 정의, 스키마 및 API 버전은 유지했습니다.",
+    "로거 및 진단 다운로드는 문서 내 예제와 설정을 바탕으로 재구성했으며, 제외된 원본 모니터링 내보내기라고 주장하지 않습니다. 실제 연결 문자열은 승인된 메모리 내 배포 절차를 통해서만 주입해야 합니다."
+  ],
+  "sourceJsonSha256": "65026dd66f72b60f1ca8f5b83ff03bf8ac40cfca9752acbb741ae2126380c097",
+  "sourceBodySha256": null
+}

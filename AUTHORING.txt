@@ -1,15 +1,21 @@
 Azure Tech Field Notes
 
-This repository is a static English technical-documentation site.
+This repository is a static English/Korean technical-documentation site.
 There is no backend, tracking, remote font, runtime source-repository fetch,
 or authentication requirement for visitors.
 
 Layout
   content\*.json         Topic metadata and translated article HTML
   content\*.html         Article fragments referenced by bodyFile
+  content\ko\           Korean translations of reviewed English articles
+  locales\ui.json       English and Korean site-interface strings
+  locales\ko-visuals.json Korean diagram and chart titles/captions
+  locales\ko-portal-screenshots.json Korean screenshot descriptions/captions
+  localization.ps1      Translation loading, source fingerprints, parity guards
   downloads\<topic>\     Reviewed, parameterized companion files
   assets\               Shared CSS and browser JavaScript
-  docs\                 Generated GitHub Pages site; do not edit directly
+  docs\                 English site and shared assets; do not edit directly
+  docs\ko\              Generated Korean index and topic pages
   build.ps1             Dependency-free Windows PowerShell site generator
   validate.ps1          Local artifact and link validation
   preview.ps1           Loopback-only preview server
@@ -29,7 +35,8 @@ declared topics; -AllowPartial is for local work in progress only.
 
 Preview
   powershell.exe -NoProfile -File .\preview.ps1 -Port 8765
-  Open http://localhost:8765/azuretech/
+  English: http://localhost:8765/azuretech/
+  Korean:  http://localhost:8765/azuretech/ko/
   The /azuretech/ prefix deliberately matches the project-site path.
 
 GitHub Pages configuration
@@ -40,10 +47,47 @@ GitHub Pages configuration
   Intended URL: https://junpark12.github.io/azuretech/
   Publishing or changing Pages settings requires owner approval.
 
+Bilingual routing
+  Existing English URLs remain unchanged. Korean pages use /ko/ and retain
+  the same topic filenames and section IDs. The language selector maps to
+  the same article, preserves the last reading section (including ordinary
+  scrolling without a URL fragment) and theme, and works as
+  ordinary links without JavaScript (section retention requires JavaScript).
+  The header stays visible while reading so switching language does not
+  require scrolling back to the top; the desktop TOC sits below the header.
+  Locale-local links keep navigation within the selected edition.
+  No automatic language redirect, browser-language guessing, cookies or
+  storage are required. Each language has canonical and hreflang metadata.
+  Downloads, source code examples, diagrams' internal English labels, and
+  actual English Portal screenshots are shared rather than copied into /ko/.
+
+Translation maintenance
+  English content is the reviewed canonical source, not the unredacted
+  private Korean notebooks. Translate full prose, headings, narrative table
+  cells, cautions, source descriptions, resource labels, and omission notes.
+  Keep every pre/code block, inline code, HTML ID, URL, and numerical
+  observation unchanged. Use the same download paths and metadata order.
+  Korean JSON uses bodyFile for the translated HTML, sourceJsonSha256 for
+  its English metadata file, and sourceBodySha256 for the English bodyFile
+  (null when the English body is inline). Hash the original UTF-8 bytes.
+  When English content changes, review and update the corresponding Korean
+  translation FIRST, then refresh fingerprints with Get-FileHash -Algorithm
+  SHA256. Never just update hashes to bypass a stale-translation failure.
+  Caption translation files similarly fingerprint visuals.json and
+  portal-screenshots.json. Preserve capture dates and measured chart data.
+  UI translations use locales\ui.json's koSourceSha256: SHA256 of the UTF-8
+  bytes of its English object serialized by Windows PowerShell with
+  ConvertTo-Json -Depth 10 -Compress. Review Korean UI before refreshing it.
+  build.ps1 and validate.ps1 reject missing/stale translations and mismatched
+  code, sections, table structure, literal measurement cells, resource paths
+  or metadata coverage. Narrative quantities may use Korean numeric units.
+  Both languages must build together. There is no silent English fallback
+  on a Korean page and no runtime third-party translation service.
+
 Editing
   Edit the matching content JSON or bodyFile HTML fragment, rebuild, and
-  review docs before committing. Keep sourceDocuments as English titles,
-  not private source URLs. downloads[].path is site-root-relative:
+  review docs before committing. Translate sourceDocuments titles for Korean;
+  never include private source URLs. downloads[].path is site-root-relative:
   downloads/<topic>/file.ext. Links written inside bodyHtml are relative to
   docs/topics/<topic>.html, so use ../downloads/<topic>/file.ext.
   Section headings must have unique IDs. The builder reserves "resources"
@@ -52,7 +96,8 @@ Editing
 
 Visuals
   Topic cards reuse a decorative icon-only version of the article diagram.
-  Article figures have English captions and accessible text descriptions.
+  Article figures have localized captions and accessible text descriptions;
+  diagram-internal labels remain English in both editions.
   On narrow screens, diagrams scroll rather than shrinking text to illegibility.
   Dashed paths distinguish configuration/secondary relationships; captions
   explain conceptual simplifications and unimplemented designs.

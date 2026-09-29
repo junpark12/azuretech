@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<title>네트워크 정책이 없는 AKS를 Cilium으로 마이그레이션하기 | Azure Tech Field Notes</title>
+<meta name="description" content="측정 기록이 있는 Azure CNI Overlay 마이그레이션을 재현하고 DNS, 네임스페이스 간 통신, 외부 접근 정책을 단계적으로 적용합니다.">
+<link rel="canonical" href="https://junpark12.github.io/azuretech/ko/topics/cilium-network-policy.html">
+<link rel="alternate" hreflang="en" href="https://junpark12.github.io/azuretech/topics/cilium-network-policy.html">
+<link rel="alternate" hreflang="ko" href="https://junpark12.github.io/azuretech/ko/topics/cilium-network-policy.html">
+<link rel="alternate" hreflang="x-default" href="https://junpark12.github.io/azuretech/topics/cilium-network-policy.html">
+<link rel="stylesheet" href="../../assets/site.css">
+<script src="../../assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+<header class="site-header"><a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">AT</span><span>Azure Tech<span class="brand-subtitle">FIELD NOTES</span></span></a><nav aria-label="사이트 메뉴"><a href="../index.html">전체 주제</a><div class="language-switch" role="group" aria-label="언어"><a class="language-link" href="cilium-network-policy.html" hreflang="ko" lang="ko" aria-current="page">&#54620;&#44397;&#50612;</a><a class="language-link" href="../../topics/cilium-network-policy.html" hreflang="en" lang="en">English</a></div><button id="theme-toggle" type="button">테마 전환</button></nav></header>
+<main id="main" class="topic-layout">
+<aside class="toc"><details open><summary>이 페이지의 내용</summary><ol><li><a href="#visual-overview">구조 한눈에 보기</a></li><li><a href="#decision">1. 정책 엔진 선택 및 마이그레이션 위험 이해</a></li><li><a href="#preflight">2. 프로덕션 준비 상태 사전 점검</a></li><li><a href="#create-lab">3. 정책 없는 기준선 구축</a></li><li><a href="#transition">4. 전환 및 가용성 모니터링</a></li><li><a href="#cross-namespace">5. 백엔드를 별도 네임스페이스로 이동</a></li><li><a href="#deny-and-dns">6. DNS를 제외한 송신 차단</a></li><li><a href="#selective-allow">7. 프런트엔드만 백엔드에 접근하도록 허용</a></li><li><a href="#advanced-policy">8. Cilium 전용 운영 예시</a></li><li><a href="#rollout-order">9. 단계적 적용 및 문제 해결</a></li><li><a href="#cleanup">10. 폐기 가능한 실험 환경만 제거</a></li><li><a href="#references">참고 자료와 한계</a></li><li><a href="#resources">참고 리소스</a></li><li><a href="#editorial-notes">편집 및 출처 안내</a></li></ol></details><a class="back-link" href="../index.html">&#8592; 전체 주제</a></aside>
+<article class="article"><header class="article-header"><p class="eyebrow">AKS / 기술 가이드</p><h1>네트워크 정책이 없는 AKS를 Cilium으로 마이그레이션하기</h1><p class="lead">측정 기록이 있는 Azure CNI Overlay 마이그레이션을 재현하고 DNS, 네임스페이스 간 통신, 외부 접근 정책을 단계적으로 적용합니다.</p><div class="article-meta"><span>한국어판</span><span>변수화된 예제</span><span>2026년 9월</span></div><p class="translation-note">한국어판은 검토&#183;수정된 영문 게시본을 기준으로 번역했습니다. 코드, 다운로드 파일, 구조도 내부 표기와 영문 Azure Portal 캡처는 두 언어에서 동일하게 사용합니다.</p></header>
+<aside class="editorial-note"><strong>환경별 관찰 결과입니다.</strong> 측정값과 미리 보기 기능의 동작은 원본 조사 환경에서 확인한 내용이며, 현재 서비스의 보장 사항이 아닙니다. 구성값은 자신의 환경에 맞게 지정해야 합니다.</aside>
+<figure class="technical-visual"><div class="visual-heading"><span class="eyebrow">구조 한눈에 보기</span><h2 id="visual-overview">의도한 트래픽만 허용합니다</h2></div><div class="visual-canvas" tabindex="0" role="region" aria-label="가로로 스크롤할 수 있는 구조도"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 344" role="img" aria-label="의도한 트래픽만 허용합니다. 개념적인 정책 경계이며 완전한 규칙 집합은 아닙니다. DNS, 네임스페이스 간 통신 및 외부로 나가는 트래픽은 명시적으로 검토하고 연결을 테스트해야 합니다."><defs><marker id="arrow-cilium-network-policy-article" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="diagram-arrow" d="M0 0L8 4L0 8z"/></marker></defs><path class="diagram-guide" d="M24 32H696M24 324H696"/><text class="diagram-kicker" x="24" y="23">SYSTEM VIEW / CILIUM NETWORK POLICY</text><path class="diagram-edge" marker-end="url(#arrow-cilium-network-policy-article)" d="M194 112 H275"/><text class="diagram-edge-label" x="234" y="100">evaluate</text><path class="diagram-edge" marker-end="url(#arrow-cilium-network-policy-article)" d="M445 112 H526"/><text class="diagram-edge-label" x="484" y="100">allow</text><path class="diagram-edge" marker-end="url(#arrow-cilium-network-policy-article)" d="M109 152 V232"/><text class="diagram-edge-label" x="150" y="195">check DNS</text><path class="diagram-edge diagram-dashed" marker-end="url(#arrow-cilium-network-policy-article)" d="M445 132 H484 V272 H526"/><text class="diagram-edge-label" x="510" y="195">deny</text><g class="diagram-node" transform="translate(24 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><rect x="1" y="1" width="10" height="10" rx="2"/><rect x="17" y="1" width="10" height="10" rx="2"/><rect x="9" y="19" width="10" height="10" rx="2"/><path d="M6 11v4h16v-4M14 15v4"/></g></g><text class="diagram-node-title" x="12" y="47">Workload Pod</text><text class="diagram-node-detail" x="12" y="65">Source namespace</text></g><g class="diagram-node diagram-accent" transform="translate(275 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><path d="M14 1L3 5v9c0 7 11 14 11 14s11-7 11-14V5zM8 14l4 4 8-9"/></g></g><text class="diagram-node-title" x="12" y="47">Cilium policy</text><text class="diagram-node-detail" x="12" y="65">Identity + traffic rules</text></g><g class="diagram-node" transform="translate(526 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><rect x="1" y="1" width="10" height="10" rx="2"/><rect x="17" y="1" width="10" height="10" rx="2"/><rect x="9" y="19" width="10" height="10" rx="2"/><path d="M6 11v4h16v-4M14 15v4"/></g></g><text class="diagram-node-title" x="12" y="47">Allowed service</text><text class="diagram-node-detail" x="12" y="65">Selected destination</text></g><g class="diagram-node" transform="translate(24 232)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><circle cx="14" cy="14" r="7"/><path d="M14 1v6M14 21v6M1 14h6M21 14h6M5 5l4 4M19 19l4 4M5 23l4-4M19 9l4-4"/></g></g><text class="diagram-node-title" x="12" y="47">DNS resolution</text><text class="diagram-node-detail" x="12" y="65">Required dependency</text></g><g class="diagram-node" transform="translate(526 232)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><path d="M14 1L3 5v9c0 7 11 14 11 14s11-7 11-14V5zM8 14l4 4 8-9"/></g></g><text class="diagram-node-title" x="12" y="47">Other traffic</text><text class="diagram-node-detail" x="12" y="65">Deny when selected</text></g></svg></div><figcaption>개념적인 정책 경계이며 완전한 규칙 집합은 아닙니다. DNS, 네임스페이스 간 통신 및 외부로 나가는 트래픽은 명시적으로 검토하고 연결을 테스트해야 합니다. 선은 표시된 관계를 나타내며, 점선은 구성 경로나 주 경로 이외의 관계를 구분합니다. 자세한 내용은 아래 절차를 확인하세요. 그림 내부 표기는 영문판과 공유합니다.</figcaption></figure>
+<div class="article-body"><p>이 문서는 2026년 5월 21일 미국 동부 2에서 기록한 검증 보고서를 번역한 것입니다. 실험은 Kubernetes 1.34.7과 Standard_B2s VM을 사용하는 2노드 Azure CNI Overlay 클러스터에서 수행되었습니다. 모든 환경 식별자와 관찰된 주소는 제거했습니다. 아래 시간은 해당 단일 실험의 과거 관찰값이지 프로덕션 가용성을 약속하는 수치가 아닙니다.</p><h2 id="decision">1. 정책 엔진 선택 및 마이그레이션 위험 이해</h2><table><thead><tr><th>영역</th><th>Cilium</th><th>Calico</th><th>Azure NPM</th></tr></thead><tbody><tr><td>데이터 플레인/정책 모델</td><td>커널 eBPF 데이터 플레인</td><td>Azure CNI 위의 정책 계층</td><td>iptables 기반 정책</td></tr><tr><td>Overlay</td><td>원본에서 권장하는 네이티브 경로</td><td>조합 제약 확인 필요</td><td>조합 제약 확인 필요</td></tr><tr><td>none에서 현재 위치 전환</td><td>문서화된 az aks update 경로</td><td>원본은 네트워킹 구성에 따라 지원되는 업데이트 경로를 제시합니다.</td><td>원본 비교에는 none에서 NPM으로 전환하는 경로가 없습니다.</td></tr><tr><td>고급 제어</td><td>Cilium 정책으로 FQDN 및 L7 제어를 표현할 수 있습니다. AKS 관리형 기능과 지원 범위를 검증하세요.</td><td>일반적인 AKS 비교 범위는 L3/L4입니다.</td><td>L3/L4</td></tr><tr><td>흐름 관찰 가능성</td><td>활성화 및 지원되는 경우 Hubble 생태계</td><td>별도 관찰 기능 필요</td><td>이 보고서에는 동등한 기능이 포함되지 않음</td></tr><tr><td>Windows</td><td>Linux 절차가 Windows 풀을 지원한다고 가정하지 마세요.</td><td>원본은 Linux 전용 정책 지원으로 설명합니다.</td><td>사용 중지/지원 제약 적용</td></tr></tbody></table><p>원본은 Overlay를 유지하면서 표준 NetworkPolicy 적용을 실효성 있게 만들기 위해 Cilium을 권장하며 Azure NPM Linux의 사용 중지일을 2028년 9월 30일, Windows의 사용 중지 시기를 2026년 9월로 인용합니다. 이 날짜와 플랫폼 지원은 원본 작성 당시의 현황입니다. 최신 Microsoft 수명 주기 안내를 확인하세요. 업스트림 Cilium 기능이 모든 AKS 관리형 구성에서 모든 기능을 사용할 수 있다는 뜻은 아닙니다.</p><blockquote>이 전환은 무중단 전환이 아닙니다. 노드가 순차적으로 교체되고 Pod가 퇴거되며 원본은 Cilium에서 Azure 데이터 플레인으로의 현재 위치 롤백을 사용할 수 없다고 명시합니다. 대표성 있는 스테이징 클러스터에서 테스트하고 구성을 백업하며 필요한 경우 다른 클러스터를 통한 복구를 계획하세요.</blockquote><h2 id="preflight">2. 프로덕션 준비 상태 사전 점검</h2><figure class="portal-capture" id="portal-aks-network-profile">
+<div class="visual-heading"><span class="eyebrow">AZURE PORTAL / 영문 화면</span><h3>마이그레이션을 계획하기 전에 실제 네트워크 프로필 확인하기</h3><p class="portal-navigation">Kubernetes service &gt; Settings &gt; Networking &gt; Overview</p></div>
+<a class="portal-image-link" href="../../assets/portal/aks-network-profile.png" target="_blank" rel="noopener" aria-label="원본 크기로 스크린샷 열기: 마이그레이션을 계획하기 전에 실제 네트워크 프로필 확인하기"><img src="../../assets/portal/aks-network-profile.png" alt="Azure CNI 노드 서브넷 방식, 아웃바운드 부하 분산 장치, Cilium 데이터 플레인 비활성화 및 네트워크 정책 엔진 없음이 표시된 AKS 네트워크 프로필입니다. 서비스 CIDR과 DNS 서비스 IP는 가렸습니다." width="1146" height="590" loading="lazy" decoding="async"></a>
+<figcaption><span class="capture-meta">촬영일 2026-09-16 &middot; 식별정보를 가리거나 제외한 화면 &middot; 이미지를 누르면 크게 볼 수 있습니다</span>접근 가능한 이 클러스터에는 Azure CNI 노드 서브넷 방식, Cilium 비활성화 및 정책 엔진 없음이 표시됩니다. 본문의 Azure CNI Overlay 테스트 클러스터가 아닙니다. 이 스크린샷은 현재 구성을 어디서 확인하는지 보여 줄 뿐, 마이그레이션 이후 결과도 아니고 예제를 변경 없이 적용해도 된다는 의미도 아닙니다. 네트워크 주소는 가렸으며 마이그레이션은 시작하지 않았습니다.</figcaption>
+</figure><ol><li><code>iptables -L -n</code>으로 사용자 지정 노드 iptables 규칙을 조사하세요. eBPF 데이터 경로 동작은 이 규칙이 전제한 조건을 우회할 수 있습니다. 필요한 제어를 지원되는 정책으로 옮기고 트래픽을 검증하세요.</li><li>NodePort/LoadBalancer Service의 <code>externalTrafficPolicy: Local</code>을 점검하고 kube-proxy 교체 후 원본 IP 보존을 테스트하세요.</li><li><code>nodeProvisioningProfile</code>을 확인하세요. 보고서는 Node Auto-Provisioning이 활성화된 상태에서는 데이터 플레인 변경이 차단된다고 설명합니다. 지원 절차에 따라 비활성화, 전환, 재활성화를 계획하세요.</li><li>cilium-agent를 위한 노드 여유 용량을 확보하세요. 보고서는 노드당 CPU 약 100m, 메모리 200Mi를 운영 추정치로 제시하며 보장된 요청량이나 제한값은 아닙니다.</li><li>PDB, 애플리케이션 복제본, 서지 용량, 드레인 동작, 준비 상태, Pod 분산을 검토하세요. 복제본 2개 이상과 충족 가능한 중단 예산이 단일 복제본 실험보다 안전합니다.</li><li>실제 업데이트는 승인된 유지 관리 시간에 예약하세요. AKS 유지 관리 정책만 설정하면 수동으로 시작한 명령이 지연된다고 가정해서는 안 됩니다.</li><li>정책 및 흐름 관찰 기능을 준비하세요. Hubble 가용성을 확인해야 합니다. 아래 릴레이 쿼리는 릴레이를 감지할 뿐 설치하거나 활성화하지 않습니다.</li></ol><pre><code class="language-bash">export RESOURCE_GROUP="YOUR_RESOURCE_GROUP"
+export CLUSTER="YOUR_CLUSTER"
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" --query nodeProvisioningProfile
+kubectl get svc -A -o yaml | grep externalTrafficPolicy
+kubectl top nodes
+kubectl get pdb -A
+kubectl get pods -n kube-system -l k8s-app=hubble-relay</code></pre><h2 id="create-lab">3. 정책 없는 기준선 구축</h2><p>다음은 폐기 가능한 실험 환경이며 프로덕션 클러스터를 다시 만들라는 지침이 아닙니다. 초기 프로필에는 networkDataplane=azure, networkPlugin=azure, networkPluginMode=overlay, networkPolicy=none이 표시되어야 합니다.</p><pre><code class="language-bash">az aks create --resource-group "$RESOURCE_GROUP" --name "$CLUSTER" \
+  --location eastus2 --node-count 2 --node-vm-size Standard_B2s \
+  --network-plugin azure --network-plugin-mode overlay --network-policy none \
+  --enable-managed-identity --generate-ssh-keys
+az aks get-credentials -g "$RESOURCE_GROUP" -n "$CLUSTER"
+kubectl create namespace netpol-test
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" --query networkProfile
+kubectl get nodes</code></pre><h3>2계층 애플리케이션 배포</h3><p>백엔드 Deployment와 Service를 <code>backend.yaml</code>로, 프런트엔드를 <code>frontend.yaml</code>로 저장하세요. 이는 본문 예시이며 추가 원본 다운로드가 아닙니다. 위의 네임스페이스 생성은 보고서의 배포 블록에서 빠진 단계를 보충합니다.</p><pre><code class="language-yaml">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: netpol-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: backend}
+  template:
+    metadata:
+      labels: {app: backend}
+    spec:
+      containers:
+      - name: backend
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: netpol-test
+spec:
+  selector: {app: backend}
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: netpol-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: frontend}
+  template:
+    metadata:
+      labels: {app: frontend}
+    spec:
+      containers:
+      - name: frontend
+        image: curlimages/curl:8.8.0
+        command: ["/bin/sh", "-c", "sleep 36000"]</code></pre><pre><code class="language-bash">kubectl -n netpol-test exec deploy/frontend -- \
+  sh -c "curl -s -o /dev/null -w '%{http_code}' http://backend"
+# Recorded outcome: exit code 0, HTTP 200.</code></pre><p>정책 적용이 없는 상태에서는 같은 네임스페이스 내 트래픽이 성공했습니다. 이미지 버전은 테스트 당시 값을 유지했으며 재사용 전에 보안과 가용성을 검토해야 합니다.</p><h2 id="transition">4. 전환 및 가용성 모니터링</h2><pre><code class="language-bash">az aks update --resource-group "$RESOURCE_GROUP" --name "$CLUSTER" \
+  --network-dataplane cilium --network-policy cilium
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER" \
+  --query '{dataplane:networkProfile.networkDataplane,policy:networkProfile.networkPolicy,state:provisioningState}'
+kubectl get nodes
+kubectl -n netpol-test get pods -o wide
+kubectl -n netpol-test exec deploy/frontend -- \
+  sh -c "curl -s -o /dev/null -w '%{http_code}' http://backend"</code></pre><p>업데이트가 실행되는 동안 두 번째 터미널에서 약 10초마다 노드 준비 상태와 프런트엔드에서 백엔드로의 요청을 샘플링하세요. 보고서는 Kubernetes exec 기반 프로브를 사용했습니다. <code>EXEC_FAIL</code>이 1회 기록되었으며 이는 Pod 퇴거나 exec 실패를 포함할 수 있으므로 애플리케이션이 정확히 11초 동안 중단되었다는 증거는 아닙니다.</p><table><thead><tr><th>2026년 5월 21일 UTC 시각</th><th>관찰된 이벤트</th></tr></thead><tbody><tr><td>04:50:19</td><td>시작. Ready 노드 2개, curl 200</td></tr><tr><td>04:53:17</td><td>세 번째 노드 추가, 처음에는 NotReady. 요청은 계속 200</td></tr><tr><td>04:54:31</td><td>새 노드 Ready</td></tr><tr><td>04:55:34</td><td>이전 노드 SchedulingDisabled. EXEC_FAIL 1회</td></tr><tr><td>04:55:45</td><td>약 11초 뒤 다음 기록된 요청은 200</td></tr><tr><td>04:56:48</td><td>첫 번째 교체 완료, Ready 노드 2개</td></tr><tr><td>04:58:54</td><td>두 번째 교체 시작</td></tr><tr><td>05:00:12</td><td>두 번째 교체 노드 Ready 도달</td></tr><tr><td>05:08:39</td><td>ProvisioningState=Succeeded. 총 18분 20초</td></tr></tbody></table><p>관찰된 교체 순서는 maxSurge 방식이었습니다. 새 노드를 추가하고 이전 노드를 스케줄링 불가로 만든 뒤 드레인하고 이전 노드를 삭제한 다음 반복했습니다. 동시 재이미징이 아니었습니다. 최종 networkDataplane과 networkPolicy는 모두 <code>cilium</code>이었습니다. 두 노드와 워크로드 모두 Ready/Running 상태였고 업데이트 후 요청은 종료 코드 0, HTTP 200을 반환했습니다.</p><h2 id="cross-namespace">5. 백엔드를 별도 네임스페이스로 이동</h2><p>위 YAML에서 백엔드만 복사하여 두 리소스 모두에 <code>metadata.namespace: backend-ns</code>를 설정하세요. <code>-n</code> 플래그는 매니페스트에 적힌 충돌하는 네임스페이스를 덮어쓰지 않습니다. 이 테스트의 백엔드 이동은 의도적으로 중단을 유발합니다.</p><pre><code class="language-bash">kubectl create namespace backend-ns
+kubectl -n netpol-test delete deployment backend
+kubectl -n netpol-test delete service backend
+# backend.yaml must now contain only the backend resources with namespace backend-ns.
+kubectl -n backend-ns apply -f backend.yaml
+kubectl -n netpol-test exec deploy/frontend -- \
+  sh -c "curl -s -o /dev/null -w '%{http_code}' http://backend.backend-ns.svc.cluster.local"
+# Recorded: exit code 0, HTTP 200.</code></pre><p>Cilium 설치만으로 모든 트래픽이 기본 거부되지는 않습니다. 정책으로 워크로드를 선택하기 전에는 네임스페이스 간 트래픽이 계속 허용되었습니다.</p><h2 id="deny-and-dns">6. DNS를 제외한 송신 차단</h2><pre><code class="language-yaml">apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-egress
+  namespace: netpol-test
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: netpol-test
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53</code></pre><p>namespaceSelector와 podSelector는 같은 피어 항목 안에 있으므로 둘 다 일치해야 합니다. UDP 및 TCP DNS가 허용됩니다. 정책은 허용 범위가 합산됩니다. DNS 허용 정책은 다른 송신이 격리된 Pod에 허용되는 송신을 추가합니다.</p><pre><code class="language-bash">kubectl -n netpol-test exec deploy/frontend -- \
+  sh -c "curl -sS --connect-timeout 5 -m 8 -o /dev/null -w '%{http_code}' http://backend.backend-ns.svc.cluster.local"
+# Recorded: curl exit code 28; connection timed out after about 5002 ms.</code></pre><h2 id="selective-allow">7. 프런트엔드만 백엔드에 접근하도록 허용</h2><pre><code class="language-yaml">apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: netpol-test
+spec:
+  podSelector:
+    matchLabels: {app: frontend}
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: backend-ns
+      podSelector:
+        matchLabels: {app: backend}
+    ports:
+    - protocol: TCP
+      port: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: other
+  namespace: netpol-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: other}
+  template:
+    metadata:
+      labels: {app: other}
+    spec:
+      containers:
+      - name: other
+        image: curlimages/curl:8.8.0
+        command: ["/bin/sh", "-c", "sleep 36000"]</code></pre><pre><code class="language-bash">for APP in frontend other; do
+  kubectl -n netpol-test exec "deploy/$APP" -- \
+    sh -c "curl -sS --connect-timeout 5 -m 8 -o /dev/null -w '%{http_code}' http://backend.backend-ns.svc.cluster.local"
+done</code></pre><table><thead><tr><th>호출자</th><th>기록된 결과</th><th>해석</th></tr></thead><tbody><tr><td>frontend</td><td>종료 0, HTTP 200</td><td>레이블 범위 예외가 작동함</td></tr><tr><td>other</td><td>종료 28, 약 5001 ms 후 시간 초과</td><td>다른 워크로드는 DNS를 제외하고 계속 격리됨</td></tr></tbody></table><h2 id="advanced-policy">8. Cilium 전용 운영 예시</h2><p>표준 NetworkPolicy는 L3/L4 주소와 포트를 다룹니다. CiliumNetworkPolicy는 Cilium 전용 선택자와 지원되는 경우 특정 HTTP 메서드나 경로만 허용하는 등의 FQDN 및 L7 제어를 추가합니다. 다음 예시는 원본의 각 정책 패턴을 재현합니다. 아래 사설 CIDR은 예시용 RFC1918 범위이며 실험 환경의 주소가 아닙니다. 승인된 서브넷 또는 엔드포인트로 바꾸세요.</p><h3>Application Gateway 서브넷에서 프런트엔드로</h3><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-ingress-from-appgw
+  namespace: demo1
+spec:
+  endpointSelector:
+    matchLabels: {app: frontend}
+  ingress:
+  - fromCIDR:
+    - 10.100.2.0/24 # Illustrative Application Gateway subnet, not a real environment value.
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP</code></pre><h3>네임스페이스를 넘어 서비스 계층으로 송신</h3><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-egress-to-demo2
+  namespace: demo1
+spec:
+  endpointSelector:
+    matchLabels: {app: frontend}
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: demo2
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP</code></pre><h3>CoreDNS 접근</h3><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: demo1
+spec:
+  endpointSelector: {}
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s-app: kube-dns
+    toPorts:
+    - ports:
+      - port: "53"
+        protocol: UDP
+      - port: "53"
+        protocol: TCP</code></pre><h3>FQDN을 통한 외부 API</h3><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-egress-google-api
+  namespace: demo1
+spec:
+  endpointSelector:
+    matchLabels: {app: backend-api}
+  egress:
+  - toFQDNs:
+    - matchPattern: "*.googleapis.com"
+    - matchPattern: "*.google.com"
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP</code></pre><blockquote>원본 DNS 예시는 포트 53만 허용하며 FQDN 정책 상태를 채우는 데 사용되는 DNS 프록시/관찰 규칙을 보여 주지 않습니다. DNS 전송을 허용하기만 하면 FQDN 블록이 작동한다고 가정하지 마세요. AKS/Cilium 지원, DNS 가시성, 필요한 DNS L7 규칙을 확인한 뒤 확인된 주소와 드롭된 흐름을 검증하세요. 와일드카드가 접두사 없는 최상위 도메인까지 반드시 일치시키는 것은 아닙니다.</blockquote><h3>MySQL 프라이빗 엔드포인트</h3><pre><code class="language-yaml">apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-egress-mysql-pe
+  namespace: demo1
+spec:
+  endpointSelector:
+    matchLabels: {app: backend-api}
+  egress:
+  - toCIDR:
+    - 10.200.1.5/32 # Illustrative private endpoint only; replace before use.
+    toPorts:
+    - ports:
+      - port: "3306"
+        protocol: TCP</code></pre><h2 id="rollout-order">9. 단계적 적용 및 문제 해결</h2><ol><li>데이터 플레인 전환을 완료하고 provisioningState=Succeeded를 확인하세요.</li><li>제한적인 정책을 적용하기 전에 기존 서비스를 검증하세요.</li><li>명시적으로 선택한 워크로드에 수신 허용 정책을 적용하세요. 선택한 방향의 수신이 격리됩니다. 별도 전체 수신 거부 정책이 항상 필요한 것은 아닙니다.</li><li>송신을 단계적으로 강화하세요. 전체 거부, DNS, 네임스페이스/레이블로 선택한 서비스, 지원되는 FQDN 기반 외부 API, IP 기반 데이터베이스 순서로 적용합니다.</li><li>각 연결의 양쪽 끝을 확인하세요. 송신 예외가 별도의 백엔드 수신 거부 정책을 무효화하지는 않습니다.</li><li>Hubble 또는 Cilium 드롭 모니터링으로 빠진 권한을 찾아 점진적으로 조정하세요. 정책의 영향 범위를 과장하지 마세요. 적용 범위는 클러스터 어딘가에 정책이 존재한다는 사실이 아니라 선택된 엔드포인트와 방향으로 결정됩니다.</li></ol><h2 id="cleanup">10. 폐기 가능한 실험 환경만 제거</h2><pre><code class="language-bash"># Destructive: verify the current subscription, resource group and cluster first.
+az aks delete -g "$RESOURCE_GROUP" -n "$CLUSTER" --yes
+az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER"</code></pre><p>원본의 정리는 검증 당일 05:09:43Z부터 05:14:48Z까지 실행되었습니다. 이어진 show 명령은 ResourceNotFound(종료 코드 3)를 반환하여 삭제를 확인했습니다. 클러스터 삭제는 프로덕션 워크로드의 롤백 전략이 아닙니다.</p><h2 id="references">참고 자료와 한계</h2><ul><li><a href="https://learn.microsoft.com/en-us/azure/aks/use-network-policies">AKS 네트워크 정책</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/azure-cni-powered-by-cilium">Cilium 기반 Azure CNI</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/update-azure-cni">Azure CNI 업데이트</a></li><li><a href="https://learn.microsoft.com/en-us/azure/aks/migrate-from-npm-to-cilium-network-policy">NPM에서 Cilium으로 마이그레이션</a></li><li><a href="https://docs.cilium.io/en/stable/security/policy/">Cilium 정책 문서</a></li></ul><p>보고서는 6가지 실험 결과를 검증합니다. 초기 동일 네임스페이스 통신 성공, 프로브 1회 실패를 동반한 전환 성공, 정책 없는 네임스페이스 간 통신 성공, DNS를 유지한 송신 차단, 프런트엔드 전용 허용, 다른 워크로드 차단입니다. 프로덕션 가용성, Windows 동작, L7/FQDN/Hubble의 측정된 동작을 입증하지는 않습니다. 이 게시물을 위해 클러스터 명령을 실행하지 않았습니다.</p>
+<h2 id="resources">참고 리소스</h2><p>이 주제에는 별도로 배포하는 참고 파일이 없습니다. 본문의 예제를 활용하고 아래 편집 안내에서 원본 자료의 제공 범위를 확인하세요.</p><h2 id="editorial-notes">편집 및 출처 안내</h2><p>다음 원본 자료를 하나의 기술 가이드로 정리했습니다.</p><ul><li>AKS 네트워크 정책 마이그레이션 검증 보고서: None에서 Cilium으로</li></ul><ul><li>관찰된 노드 및 Pod 이름, 리소스 식별자, 실제 네트워크 주소는 생략했습니다. 테스트 타임스탬프, 버전, 측정 소요 시간과 결과는 보존했습니다.</li><li>이 폴더에는 독립된 YAML 파일이 없습니다. 리소스 다운로드를 임의로 만들지 않고 원본의 모든 정책 패턴을 본문에 유지했습니다.</li><li>업스트림 기능 가용성과 사용 중지 날짜에 관한 주장은 원본 작성 당시의 안내로 유지하고 명시적인 확인 주의 사항을 덧붙였습니다.</li></ul><p>원본 자격증명이나 비공개 저장소 링크는 포함하지 않습니다. 실제 구성값을 넣은 파일이나 운영 환경의 출력을 이 공개 사이트에 다시 올리지 마세요.</p></div>
+</article></main>
+<footer><span>Azure Tech Field Notes</span><span>개인 기술 기록이며 Microsoft의 공식 게시물이 아닙니다.</span><span>한국어판 &middot; 2026년 9월</span></footer>
+<div class="sr-only" id="status" role="status" aria-live="polite"></div>
+</body></html>
