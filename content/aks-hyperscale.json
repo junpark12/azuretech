@@ -1,0 +1,21 @@
+{
+  "slug": "aks-hyperscale",
+  "category": "AKS",
+  "publishedOn": "2026-10-07",
+  "title": "AKS Hyperscale Control Plane: Size the Bottleneck, Read the Metrics",
+  "summary": "A practical Preview guide to H2/H4/H8, independent etcd partitions, supported lifecycle changes, schema v2 managed Prometheus, and what a small October 1 observation can—and cannot—prove.",
+  "bodyFile": "aks-hyperscale.html",
+  "sourceDocuments": [
+    "AKS Hyperscale Control Plane Concepts and Lab Guide, reviewed October 1, 2026",
+    "October 1 Managed Prometheus Collection and Low-Load API Observations",
+    "Public Microsoft Learn and Kubernetes Documentation, checked October 7, 2026"
+  ],
+  "downloads": [],
+  "omissions": [
+    "Private repository links, original screenshots, raw outputs, account and resource identifiers, workspace names, hostnames, addresses, credentials, and personal paths are not published.",
+    "The source scenario of ten Deployments with three Pods each is retained only as evidence scope; no workload generator, deployment manifest, or destructive cleanup command is supplied.",
+    "No H2/H4 benchmark, saturation test, throughput improvement, application readiness timing, price, availability measurement, or SLA is inferred from the observations.",
+    "All commands and PromQL are illustrative and parameterized. No cloud commands, provisioning, resizing, collection changes, or runtime load tests were executed for this article.",
+    "Upstream prose conflicts about resizing and doubling are resolved against current public documentation; its GB/GiB inconsistency is disclosed rather than silently converted. No standalone download is needed for the inline query examples."
+  ]
+}

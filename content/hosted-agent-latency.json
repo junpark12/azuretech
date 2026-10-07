@@ -1,0 +1,21 @@
+{
+  "slug": "hosted-agent-latency",
+  "category": "AI",
+  "title": "Not Every Slow Hosted Agent Request Is a Cold Start",
+  "summary": "Separate startup class, first answer text, stream completion, and overlapping traces using five historical Hosted Agent observations and a reproducible measurement plan.",
+  "publishedOn": "2026-10-07",
+  "bodyFile": "hosted-agent-latency.html",
+  "sourceDocuments": [
+    "Hosted Agent latency investigation and five-call results, September 30, 2026",
+    "Single-request latency measurement client and its configuration template",
+    "Supporting hosted-agent implementation and private-network validation notes",
+    "Microsoft Learn: hosted-agent latency diagnostics and session management"
+  ],
+  "downloads": [],
+  "omissions": [
+    "Original account, project, agent, deployment, tenant, subscription, session, request, response, resource, host, address, and local-path identifiers are omitted.",
+    "Private repository links, environment files, raw result files, diagnostic exports, original screenshots, and third-party graphics are not published.",
+    "The original client persists environment and correlation identifiers and does not collect completion trailers. It is not redistributed; focused in-page request and timing examples are illustrative, not a complete measurement client.",
+    "The separate seven-call Zenn study and separate tool-transaction capture are not included in the five-call measurement dataset. Unavailable per-call first-text and detailed header values are not reconstructed."
+  ]
+}

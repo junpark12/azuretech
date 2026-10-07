@@ -30,7 +30,7 @@ Build
   powershell.exe -NoProfile -File .\validate.ps1
 
 Use a shell allowed by your organization's execution policy. Do not change
-machine or user policy merely to run these files. The build requires all thirteen
+machine or user policy merely to run these files. The build requires all sixteen
 declared topics; -AllowPartial is for local work in progress only.
 
 Preview
@@ -93,6 +93,9 @@ Editing
   Section headings must have unique IDs. The builder reserves "resources"
   and "editorial-notes" for the shared closing sections, and "visual-overview"
   for each topic's architecture figure.
+  New articles set publishedOn (YYYY-MM-DD) identically in both languages.
+  Dated articles appear first on the index; legacy articles retain their
+  September 2026 article date even as the collection edition advances.
 
 Visuals
   Topic cards reuse a decorative icon-only version of the article diagram.
@@ -103,6 +106,9 @@ Visuals
   explain conceptual simplifications and unimplemented designs.
   Measurement charts start at zero and preserve source units. Translation
   values are eight-scenario means; ASE scale-out values are individual runs.
+  Hosted Agent latency values are five individual request-to-stream-end
+  observations, not first-text latencies or a representative distribution.
+  Its chart sourceRow maps each bar to the corresponding measurement row.
   Do not add invented before/after numbers for topics without measurements.
   Original source screenshots are not used.
 

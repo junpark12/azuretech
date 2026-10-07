@@ -1,0 +1,30 @@
+{
+  "slug": "openai-foundry-migration",
+  "category": "AI",
+  "title": "Azure OpenAI에서 Foundry로: 클라이언트는 유지하고 사설 경로는 재구성하기",
+  "summary": "기존 OpenAI 클라이언트의 동작 유지와 Private Endpoint·DNS 재구성을 구분하는 실용적인 계정 업그레이드 가이드입니다. 관리 ID 검증, 안전한 정리 순서, 관측 근거의 한계를 함께 설명합니다.",
+  "publishedOn": "2026-10-07",
+  "bodyFile": "openai-foundry-migration.html",
+  "sourceDocuments": [
+    "Azure OpenAI에서 Microsoft Foundry로의 수동 마이그레이션 실습",
+    "관리 ID 기반 Private Endpoint 검증 클라이언트",
+    "Microsoft Learn: Azure OpenAI를 Microsoft Foundry로 업그레이드",
+    "Microsoft Learn: Microsoft Foundry 네트워크 격리 구성",
+    "Azure CLI 참조: Cognitive Services 계정 업데이트"
+  ],
+  "downloads": [
+    {
+      "path": "downloads/openai-foundry-migration/verify_private_inference.py",
+      "label": "식별 정보를 제거한 사설 경로 검증 클라이언트(Python)",
+      "description": "원본을 바탕으로 매개변수화한 진단 도구로, Azure VM의 시스템 할당 관리 ID를 사용합니다. 인프라를 변경하지 않으며 명시적으로 허용할 때 과금될 수 있는 추론 요청을 한 번 보냅니다. 출력에는 응답 본문과 환경 식별 정보가 포함되지 않습니다. 원본과 동일하지 않으며 게시 준비 중 클라우드에서 테스트하지 않았습니다."
+    }
+  ],
+  "omissions": [
+    "비공개 원본 위치, 원래 파일명과 리소스 이름, 원본 커밋 및 클라이언트 지문 값, 구독·테넌트 식별자, 엔드포인트, IP 주소, 사용자 경로, 자격 증명, 원시 응답과 원본 스크린샷은 공개하지 않습니다.",
+    "기록에는 마이그레이션 전후 각각 한 번의 성공한 추론 호출만 있습니다. 연속 가용성 모니터링, 지연 시간 측정, 롤백 실행, API 키 연속성 테스트 또는 새로운 Foundry 기능 검증은 포함되지 않습니다.",
+    "제공 클라이언트는 주소 고정과 출력 축소를 적용하여 별도로 정제한 버전이며, 과거 실습에서 변경 없이 사용한 클라이언트가 아닙니다. 게시 검사는 오프라인으로만 수행했으며 Azure 호출이나 리소스 변경은 하지 않았습니다.",
+    "환경별 백업, 배포 템플릿, DNS 내보내기와 자동 파괴적 정리 작업은 의도적으로 제공하지 않습니다. 예제를 적용하기 전에 최신 서비스 문서와 조직의 변경 통제를 검토하세요."
+  ],
+  "sourceJsonSha256": "B5E2E492F6F71CBBAAA510B1CAC9063E8D0205756F5F315B7DA831CAB63548F4",
+  "sourceBodySha256": "D329F80AB100D9228F411F181993450938049FE944776A1D2476EA9DC9E37F7E"
+}

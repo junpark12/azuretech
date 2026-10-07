@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<title>AKS Hyperscale 컨트롤 플레인: 병목에 맞춘 크기 선택과 메트릭 해석 | Azure Tech Field Notes</title>
+<meta name="description" content="H2/H4/H8, 독립적인 etcd 파티션, 지원되는 수명 주기 변경, schema v2 관리형 Prometheus, 그리고 10월 1일의 소규모 관측으로 입증할 수 있는 것과 없는 것을 다루는 실용적인 Preview 가이드입니다.">
+<link rel="canonical" href="https://junpark12.github.io/azuretech/ko/topics/aks-hyperscale.html">
+<link rel="alternate" hreflang="en" href="https://junpark12.github.io/azuretech/topics/aks-hyperscale.html">
+<link rel="alternate" hreflang="ko" href="https://junpark12.github.io/azuretech/ko/topics/aks-hyperscale.html">
+<link rel="alternate" hreflang="x-default" href="https://junpark12.github.io/azuretech/topics/aks-hyperscale.html">
+<link rel="stylesheet" href="../../assets/site.css">
+<script src="../../assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+<header class="site-header"><a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">AT</span><span>Azure Tech<span class="brand-subtitle">FIELD NOTES</span></span></a><nav aria-label="사이트 메뉴"><a href="../index.html">전체 주제</a><div class="language-switch" role="group" aria-label="언어"><a class="language-link" href="aks-hyperscale.html" hreflang="ko" lang="ko" aria-current="page">&#54620;&#44397;&#50612;</a><a class="language-link" href="../../topics/aks-hyperscale.html" hreflang="en" lang="en">English</a></div><button id="theme-toggle" type="button">테마 전환</button></nav></header>
+<main id="main" class="topic-layout">
+<aside class="toc"><details open><summary>이 페이지의 내용</summary><ol><li><a href="#visual-overview">구조 한눈에 보기</a></li><li><a href="#applicability">1. 컨트롤 플레인 문제부터 구분하기</a></li><li><a href="#sizing">2. H2, H4, H8의 용량 차원 이해하기</a></li><li><a href="#partitions">3. etcd 파티션 6개에는 각각 독립된 한도가 있음</a></li><li><a href="#lifecycle">4. 마이그레이션과 크기 조정을 구분하기</a></li><li><a href="#prerequisites">5. 읽기 전용 검색으로 자격 조건 확인하기</a></li><li><a href="#observability">6. 그래프를 해석하기 전에 수집을 명확히 하기</a></li><li><a href="#queries">7. 올바른 유형, 범위, 시간 구간으로 쿼리하기</a></li><li><a href="#observations">8. 10월 1일 관측이 실제로 입증하는 것</a></li><li><a href="#decisions">9. 관측을 운영 의사 결정으로 연결하기</a></li><li><a href="#official-references">10. 공개 참조 문서와 날짜를 명시한 해석</a></li><li><a href="#resources">참고 리소스</a></li><li><a href="#editorial-notes">편집 및 출처 안내</a></li></ol></details><a class="back-link" href="../index.html">&#8592; 전체 주제</a></aside>
+<article class="article"><header class="article-header"><p class="eyebrow">AKS / 기술 가이드</p><h1>AKS Hyperscale 컨트롤 플레인: 병목에 맞춘 크기 선택과 메트릭 해석</h1><p class="lead">H2/H4/H8, 독립적인 etcd 파티션, 지원되는 수명 주기 변경, schema v2 관리형 Prometheus, 그리고 10월 1일의 소규모 관측으로 입증할 수 있는 것과 없는 것을 다루는 실용적인 Preview 가이드입니다.</p><div class="article-meta"><span>한국어판</span><span>변수화된 예제</span><span><time datetime="2026-10-07">2026-10-07</time></span></div><p class="translation-note">한국어판은 검토&#183;수정된 영문 게시본을 기준으로 번역했습니다. 코드, 다운로드 파일, 구조도 내부 표기와 영문 Azure Portal 캡처는 두 언어에서 동일하게 사용합니다.</p></header>
+<aside class="editorial-note"><strong>환경별 관찰 결과입니다.</strong> 측정값과 미리 보기 기능의 동작은 원본 조사 환경에서 확인한 내용이며, 현재 서비스의 보장 사항이 아닙니다. 구성값은 자신의 환경에 맞게 지정해야 합니다.</aside>
+<figure class="technical-visual"><div class="visual-heading"><span class="eyebrow">구조 한눈에 보기</span><h2 id="visual-overview">컨트롤 플레인 용량과 워커 준비 상태는 다릅니다</h2></div><div class="visual-canvas" tabindex="0" role="region" aria-label="가로로 스크롤할 수 있는 구조도"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 344" role="img" aria-label="컨트롤 플레인 용량과 워커 준비 상태는 다릅니다. 역할을 단순화한 개념도이며 벤치마크나 전체 Kubernetes 아키텍처가 아닙니다. API Priority and Fairness는 동시 API 작업을 제어하고, etcd는 독립된 한도를 갖는 리소스 파티션 6개를 사용합니다. 스케줄링은 워커를 선택하며 이후 이미지 가져오기, 스토리지, 시작과 프로브가 준비 상태를 결정합니다. 컨트롤러 루프와 여러 양방향 상호작용은 생략했습니다."><defs><marker id="arrow-aks-hyperscale-article" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="diagram-arrow" d="M0 0L8 4L0 8z"/></marker></defs><path class="diagram-guide" d="M24 32H696M24 324H696"/><text class="diagram-kicker" x="24" y="23">SYSTEM VIEW / AKS HYPERSCALE</text><path class="diagram-edge" marker-end="url(#arrow-aks-hyperscale-article)" d="M194 112 H275"/><text class="diagram-edge-label" x="234" y="100">API work</text><path class="diagram-edge" marker-end="url(#arrow-aks-hyperscale-article)" d="M445 112 H526"/><text class="diagram-edge-label" x="484" y="100">state</text><path class="diagram-edge diagram-dashed" marker-end="url(#arrow-aks-hyperscale-article)" d="M360 152 V232"/><text class="diagram-edge-label" x="407" y="196">watch / bind</text><path class="diagram-edge" marker-end="url(#arrow-aks-hyperscale-article)" d="M445 272 H526"/><text class="diagram-edge-label" x="484" y="260">placement</text><g class="diagram-node" transform="translate(24 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><rect x="1" y="2" width="26" height="18" rx="3"/><path d="M8 26h12M14 20v6M6 8l3 3-3 3M13 14h7"/></g></g><text class="diagram-node-title" x="12" y="47">API clients</text><text class="diagram-node-detail" x="12" y="65">Controllers + operators</text></g><g class="diagram-node diagram-accent" transform="translate(275 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><path d="M3 26V3h22v23M1 26h26M9 26V13h10v13M8 8h12"/></g></g><text class="diagram-node-title" x="12" y="47">API server + APF</text><text class="diagram-node-detail" x="12" y="65">Seats are concurrency</text></g><g class="diagram-node" transform="translate(526 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><ellipse cx="14" cy="5" rx="12" ry="4"/><path d="M2 5v18c0 6 24 6 24 0V5M2 14c0 6 24 6 24 0"/></g></g><text class="diagram-node-title" x="12" y="47">Six etcd partitions</text><text class="diagram-node-detail" x="12" y="65">Independent storage</text></g><g class="diagram-node" transform="translate(275 232)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><circle cx="14" cy="14" r="7"/><path d="M14 1v6M14 21v6M1 14h6M21 14h6M5 5l4 4M19 19l4 4M5 23l4-4M19 9l4-4"/></g></g><text class="diagram-node-title" x="12" y="47">Scheduler</text><text class="diagram-node-detail" x="12" y="65">Feasibility + binding</text></g><g class="diagram-node" transform="translate(526 232)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><rect x="1" y="1" width="10" height="10" rx="2"/><rect x="17" y="1" width="10" height="10" rx="2"/><rect x="9" y="19" width="10" height="10" rx="2"/><path d="M6 11v4h16v-4M14 15v4"/></g></g><text class="diagram-node-title" x="12" y="47">Worker lifecycle</text><text class="diagram-node-detail" x="12" y="65">Images, volumes, Ready</text></g></svg></div><figcaption>역할을 단순화한 개념도이며 벤치마크나 전체 Kubernetes 아키텍처가 아닙니다. API Priority and Fairness는 동시 API 작업을 제어하고, etcd는 독립된 한도를 갖는 리소스 파티션 6개를 사용합니다. 스케줄링은 워커를 선택하며 이후 이미지 가져오기, 스토리지, 시작과 프로브가 준비 상태를 결정합니다. 컨트롤러 루프와 여러 양방향 상호작용은 생략했습니다. 선은 표시된 관계를 나타내며, 점선은 구성 경로나 주 경로 이외의 관계를 구분합니다. 자세한 내용은 아래 절차를 확인하세요. 그림 내부 표기는 영문판과 공유합니다.</figcaption></figure>
+<div class="article-body"><h2 id="applicability">1. 컨트롤 플레인 문제부터 구분하기</h2>
+<p>AKS Hyperscale은 Kubernetes API 동시성, Pod 생성·삭제 빈도, 스케줄링 수요가 특히 높은 워크로드를 위해 컨트롤 플레인 용량을 미리 프로비저닝합니다. 워커 노드 확장 기능은 아닙니다. API 서버, 스케줄러, 컨트롤러, etcd는 원하는 상태를 관리하고, 워커 노드는 애플리케이션을 실행하는 CPU, 메모리, 네트워크, 스토리지를 제공합니다. 컨트롤 플레인을 키워도 GPU 용량이 생기거나 이미지 다운로드 오류가 해결되거나 부적합한 노드가 Pod의 배치 조건을 만족하게 되지는 않습니다.</p>
+<blockquote><p>이 글은 2026년 10월 7일에 게시한 비공식 기술 현장 노트입니다. 관측은 2026년 10월 1일의 과거 기록이며, 새 테스트, 제품 보장, 가격 정책, SLA가 아닙니다. 이 글을 위해 확인한 공개 문서에서 Hyperscale은 여전히 Preview입니다. 해당 문서는 AKS Preview를 있는 그대로, 사용 가능한 상태로 제공하며 서비스 수준 계약과 제한적 보증에서 제외하고, 최선의 노력 수준으로 지원하며, 프로덕션용으로 의도하지 않았다고 명시합니다. 의사 결정 전에 최신 약관과 지원 범위를 다시 확인하세요.</p></blockquote>
+<p>기본 AKS 컨트롤 플레인 모드는 용량을 동적으로 조정하며 대부분의 워크로드에 대한 문서상의 권장 방식입니다. 여러 배포 컨트롤러의 동시 실행, 분산 배치 작업 생성, 예측 가능한 API 활동 급증처럼 대표성 있는 근거가 컨트롤 플레인 압박을 가리킬 때 Hyperscale을 평가할 가치가 있습니다. 공개 문서가 미션 크리티컬 사용 사례를 소개하더라도 Preview의 프로덕션 사용 경고를 무효화하지는 않습니다.</p>
+<p>크기를 선택하기 전에 세 가지를 나누어 질문하세요. API 클라이언트가 처리를 기다리는가, Pod가 스케줄링을 기다리는가, 아니면 이미 스케줄링된 Pod가 Ready 상태를 기다리는가? 각각 담당 영역이 다른 별개의 대기열입니다. 클라이언트 측 시간 초과도 기록하세요. API 서버에 도달하지 못한 요청은 서버의 요청 카운터에 나타나지 않을 수 있습니다.</p>
+
+<h2 id="sizing">2. H2, H4, H8의 용량 차원 이해하기</h2>
+<p>다음 수치는 10월 7일에 확인한 공개 크기별 특성이며 이 글에서 측정한 결과가 아닙니다. 공식 표는 동시성 열을 “Kube API Server flow control executing requests”라고 부르며, 모니터링 지침은 현재 사용량을 API Priority and Fairness(APF) 실행 seat로 표현합니다. 이 값을 애플리케이션의 초당 요청 수로 해석하면 안 됩니다.</p>
+<table>
+  <thead><tr><th>크기</th><th>공개된 흐름 제어 동시성</th><th>공개된 스케줄링 속도, Pod/초</th><th>etcd 파티션 수</th><th>파티션당 스토리지</th></tr></thead>
+  <tbody>
+    <tr><td>H2</td><td>1,750</td><td>200</td><td>6</td><td>8 GiB</td></tr>
+    <tr><td>H4</td><td>3,500</td><td>300</td><td>6</td><td>8 GiB</td></tr>
+    <tr><td>H8</td><td>7,000</td><td>400</td><td>6</td><td>8 GiB</td></tr>
+  </tbody>
+</table>
+<h3>Seat는 요청 속도가 아니라 동시성 단위</h3>
+<p>APF seat는 동시 작업의 단위입니다. 대규모 목록 조회처럼 일부 요청은 여러 seat를 차지할 수 있으며, 요청 소요 시간도 seat 점유 기간에 영향을 줍니다. 따라서 요청 속도가 같아도 점유량은 다를 수 있습니다. APF는 작업을 대기열과 동시성 제어가 있는 우선순위 수준으로 나누므로, 클러스터 전체 합계가 작아 보여도 특정 수준은 제한될 수 있습니다. 단순히 그래프를 낮추기 위해 APF 정책을 변경하지 마세요.</p>
+<h3>스케줄링은 애플리케이션 준비 완료가 아님</h3>
+<p>스케줄링은 적합한 노드를 선택하고 Pod를 바인딩합니다. 이미지 다운로드, 볼륨 연결, 컨테이너 시작, 초기화, 준비 상태 프로브는 그 이후에 수행됩니다. 스케줄러 시도 카운터에는 실패한 시도와 재시도가 포함될 수 있으므로 그 속도는 Ready가 되는 고유 Pod 수가 아닙니다. 스케줄링 불가 상태를 컨트롤 플레인 용량 탓으로 돌리기 전에 리소스 요청, taint, affinity, 스토리지 제약을 조사하세요.</p>
+<p>공개된 크기 사이에서 동시성은 두 배가 되지만 스케줄링 수치는 200에서 300, 400으로 증가하며 단계마다 두 배가 되지는 않습니다. 현장 가이드도 이와 다른 상위 원문의 주장을 이미 지적합니다. 여기에는 측정된 속도 향상, Pod당 가격 비교, 가용성 약속이 없습니다. Standard/Premium 가격 책정 계층과 H2/H4/H8 컨트롤 플레인 크기는 별도 설정이며, 어느 것도 워커 크기 결정이나 최신 비용 검토를 대신하지 않습니다.</p>
+
+<h2 id="partitions">3. etcd 파티션 6개에는 각각 독립된 한도가 있음</h2>
+<p>Hyperscale은 리소스 범주별로 etcd를 6개의 클러스터로 분리합니다. 스토리지 수치는 파티션별 한도이며, 어떤 리소스 유형이든 자유롭게 사용하는 통합 풀이 아닙니다. H2에서 H4 또는 H8로 변경해도 공개된 파티션 수나 파티션당 스토리지는 늘어나지 않습니다.</p>
+<table>
+  <thead><tr><th>파티션</th><th>저장하는 Kubernetes 리소스</th><th>운영 확인 사항</th></tr></thead>
+  <tbody>
+    <tr><td>이벤트</td><td>Event 객체</td><td>반복 실패가 불필요한 이벤트 생성을 유발하는가?</td></tr>
+    <tr><td>리스</td><td>Coordination lease</td><td>조정 객체 수가 예상 범위인가?</td></tr>
+    <tr><td>노드</td><td>Node 객체</td><td>노드 레코드가 의도한 노드 집합의 수명 주기와 일치하는가?</td></tr>
+    <tr><td>Pod</td><td>Pod 객체</td><td>완료되었거나 더 이상 필요 없는 워크로드 객체가 쌓이는가?</td></tr>
+    <tr><td>Secret</td><td>Secret 객체</td><td>내용을 노출하지 않으면서 객체 크기와 보존 정책이 적절한지 확인했는가?</td></tr>
+    <tr><td>기본</td><td>Deployment, Service, ConfigMap 등 나머지 모든 리소스</td><td>보존 중인 사용자 지정 리소스나 구성 객체가 증가하는가?</td></tr>
+  </tbody>
+</table>
+<p>6개 파티션의 평균이 아니라 가장 많이 찬 파티션과 그 증가 추이를 추적하세요. 복제본마다 서로 다른 객체를 저장하는 것처럼 복제본 데이터베이스 크기를 더하면 안 됩니다. 반환된 파티션 및 인스턴스 라벨을 확인한 뒤 각 파티션 안에서 복제본의 최댓값을 사용하세요. 파티션 식별 정보가 없다면 라벨을 만들어 내지 말고 해당 관측 공백을 해결하세요.</p>
+<p>공개 문서는 파티션당 2 GB 이하를 목표로 설계하고, 파티션 사용률이 50%에 접근하면 리소스 수를 검토하라고 권장합니다. 또한 본문에서는 8 GB 하드 한도라고 설명하지만 크기 표에서는 8 GiB라고 표기합니다. 이 단위 불일치는 여기서 해결하지 않습니다. 위 표는 GiB를 유지하고 권장 사항은 문서의 표현을 유지합니다. 확인 없이 이 차이를 정확한 바이트 기반 경고 임계값으로 변환하지 마세요. 더 큰 컨트롤 플레인은 스토리지 보존 전략이 아니므로, 승인된 정리 작업에 앞서 객체 수명 주기를 검토해야 합니다.</p>
+
+<h2 id="lifecycle">4. 마이그레이션과 크기 조정을 구분하기</h2>
+<p>공개 Hyperscale 가이드는 기존 Hyperscale 클러스터의 크기 변경을 명시적으로 설명합니다. “신규 클러스터만 가능”이라는 제한은 일반 클러스터에 프로파일을 추가하는 경우에 해당하며, 이미 있는 프로파일의 크기를 변경하는 경우가 아닙니다. 이는 현장 가이드가 지적한, H4에서 H2 또는 H8로 변경하려면 재구축해야 한다는 과거 상위 원문의 설명을 바로잡습니다.</p>
+<table>
+  <thead><tr><th>작업</th><th>2026년 10월 7일 문서 기준</th><th>계획에 미치는 영향</th></tr></thead>
+  <tbody>
+    <tr><td>일반 컨트롤 플레인에서 Hyperscale로 전환</td><td>기존 클러스터에 프로파일 추가 불가</td><td>조건을 충족하는 새 클러스터를 만들고 워크로드와 데이터 이전 계획 수립</td></tr>
+    <tr><td>H2, H4, H8에서 다른 Hyperscale 크기로 변경</td><td>컨트롤 플레인 크기 업데이트 작업으로 지원</td><td>수요와 변경 위험을 검토하고 결과 프로파일 및 관측 데이터 확인</td></tr>
+    <tr><td>Hyperscale에서 일반 컨트롤 플레인으로 전환</td><td>생성 후 프로파일 제거 불가</td><td>교체 및 이전 계획 수립. 삭제는 롤백 절차가 아님</td></tr>
+    <tr><td>프로비저닝 도구</td><td>aks-preview를 포함한 Azure CLI, REST API, ARM 템플릿이 문서화되어 있으며 Preview 가이드에서 SDK와 Terraform은 미지원</td><td>클라이언트가 속성을 전송할 수 있다는 이유만으로 지원을 추론하지 않음</td></tr>
+  </tbody>
+</table>
+<p>다음 PowerShell은 실행하지 않은 예시입니다. 첫 번째 명령은 쓰기 작업으로, Hyperscale이 이미 활성화된 클러스터에 H4 컨트롤 플레인 크기를 요청합니다. 일반 클러스터에서 Hyperscale을 활성화하거나 워커 풀 크기를 변경하지 않으며, 중단 없는 변경을 보장하지도 않습니다. 사용 전에 자리 표시자를 바꾸고 변경 승인을 받은 뒤 현재 서비스 동작을 검토하세요. 두 번째 명령은 결과 프로파일을 읽기만 합니다.</p>
+<pre><code class="language-powershell">$ResourceGroup = "REPLACE_RESOURCE_GROUP"
+$ClusterName = "REPLACE_CLUSTER_NAME"
+az aks update --resource-group $ResourceGroup --name $ClusterName --control-plane-scaling-size H4
+az aks show --resource-group $ResourceGroup --name $ClusterName --query controlPlaneScalingProfile --output json</code></pre>
+<p>교체 계획에는 ID, 네트워크 종속성, 정책, 영구 데이터, 백업·복원 검증, DNS 또는 트래픽 전환, 롤백 가능 기간이 포함되어야 합니다. 구독과 지역 조합당 Hyperscale 클러스터 하나라는 Preview 제한은 병행 교체를 제약할 수 있습니다. 이 이전 방식에 의존하기 전에 할당량과 배치를 해결하세요. 자리를 확보하려고 현재 클러스터부터 삭제하면 안 됩니다.</p>
+
+<h2 id="prerequisites">5. 읽기 전용 검색으로 자격 조건 확인하기</h2>
+<p>10월 7일에 확인한 공개 사전 조건은 AKS Standard 또는 Premium 계층, Kubernetes 1.33.0 이상, Azure CLI 확장 <code>aks-preview</code> 버전 <code>21.0.0b8</code> 이상, 구독 기능 <code>ControlPlaneScalingProfilePreview</code> 등록입니다. Free 계층은 지원되지 않습니다. 프로파일은 새 클러스터를 만들 때 선택하며, Preview에서는 구독과 지역 조합당 Hyperscale 클러스터 하나가 허용됩니다. 일반 AKS 할당량과 워커 VM 할당량도 별도의 제약으로 남습니다.</p>
+<p>다음은 읽기 전용 검색 명령의 예시이며 실행한 검증이 아닙니다. 이미 인증되어 있고 명시적으로 선택한 Azure 구독과 Kubernetes 컨텍스트를 사용하세요. 로그인, 구독 전환, 자격 증명 다운로드, 확장 설치, 기능 등록은 수행하지 않습니다. 환경별 출력은 비공개로 유지하세요.</p>
+<pre><code class="language-powershell">$Location = "REPLACE_LOCATION"
+$ResourceGroup = "REPLACE_RESOURCE_GROUP"
+$ClusterName = "REPLACE_CLUSTER_NAME"
+az version
+az extension show --name aks-preview --query version --output tsv
+az feature show --namespace Microsoft.ContainerService --name ControlPlaneScalingProfilePreview --query properties.state --output tsv
+az provider show --namespace Microsoft.ContainerService --query registrationState --output tsv
+az aks get-versions --location $Location --output table
+az aks show --resource-group $ResourceGroup --name $ClusterName --query "{version:kubernetesVersion,tier:sku.tier,profile:controlPlaneScalingProfile,identityType:identity.type}" --output json
+kubectl config current-context
+kubectl get configmap ama-metrics-settings-configmap --namespace kube-system --output yaml</code></pre>
+<p>확장을 찾을 수 없다는 결과는 도구 준비가 더 필요하다는 뜻입니다. ConfigMap이 없다는 사실만으로 관리형 Prometheus가 비활성화되었다고 판단할 수는 없습니다. 버전 목록은 해당 지역에서 제공되는 Kubernetes 버전을 보여줄 뿐, Hyperscale 자격, 할당량, 보장된 용량을 입증하지 않습니다. 최신 Hyperscale 및 할당량 문서로 별도 확인하세요. 등록, 공급자 새로 고침, 확장 설치, 클러스터 생성은 모두 상태를 바꾸므로 의도적으로 승인된 설정 절차에 맡깁니다.</p>
+<p>Azure CNI Overlay는 Pod 수가 많은 환경에 대한 공개 가이드의 권장 사항이며, 다른 모든 CNI를 배제하는 필수 조건이 아닙니다. 또한 대규모 클러스터에서는 API 부하 때문에 Azure Policy 추가 기능을 권장하지 않습니다. 이러한 사항은 아키텍처 절충으로 다루세요. 성능 권장 사항을 따른다는 이유만으로 필수 거버넌스를 제거하면 안 됩니다.</p>
+
+<h2 id="observability">6. 그래프를 해석하기 전에 수집을 명확히 하기</h2>
+<p>Azure 플랫폼 메트릭과 관리형 Prometheus는 서로 다른 관측 수단입니다. Hyperscale 문서는 플랫폼 seat 사용량 <code>apiserver_flowcontrol_executing_seats</code>를 Prometheus 게이지 <code>apiserver_flowcontrol_current_executing_seats</code>에 대응시킵니다. 플랫폼 스케줄링은 <code>scheduler_schedule_attempts_rate</code>를 사용하고, Prometheus 카운터는 <code>scheduler_schedule_attempts_total</code>입니다. 플랫폼 메트릭 이름을 PromQL에 붙여 넣은 뒤 빈 결과를 부하 없음으로 해석하지 마세요.</p>
+<p>관리형 컨트롤 플레인 메트릭 가이드는 관리 ID 인증과 Azure Monitor의 관리형 Prometheus 서비스를 요구하며, 이 수집 기능에서 Azure Private Link를 지원하지 않는다고 명시합니다. 자체 호스팅 Prometheus는 전체 컨트롤 플레인 복제본을 관측하기 위한 지원 대안이 아닙니다. 컨트롤 플레인 스크레이핑은 노드 측 <code>ama-metrics</code> 추가 기능 밖에서 실행되므로, 노드 수집기가 정상이라는 사실만으로 컨트롤 플레인 수집을 입증할 수 없습니다.</p>
+<p>관리형 Prometheus 연결과 컨트롤 플레인 메트릭 활성화는 별도 단계입니다. 의도한 작업 영역에 이미 연결된 클러스터에서 다음 쓰기 예시는 컨트롤 플레인 수집을 활성화합니다. 관측 데이터 수집량과 비용이 증가할 수 있습니다. 이 명령은 작업 영역을 선택하거나 검증하지 않으며 여기서 실행하지 않았습니다.</p>
+<pre><code class="language-powershell">az aks update --resource-group $ResourceGroup --name $ClusterName --enable-control-plane-metrics</code></pre>
+<p>데이터 손실을 진단하기 전에 연결된 Azure Monitor 작업 영역에 대한 접근 권한과 쿼리 권한을 확인하세요. 공개 가이드는 작업 영역 데이터를 보기 위한 역할로 Monitoring Reader 또는 Monitoring Contributor를 명시합니다. 설정 전파와 첫 샘플 수집에는 수분이 걸릴 수 있으며, 수집을 켜도 과거 데이터가 소급 생성되지는 않습니다. 활성화 이후 시간 범위에서 원시 시계열부터 확인하고, 충분한 샘플이 생긴 뒤 범위 함수를 사용하세요.</p>
+<h3>Schema v2: 덮어쓰지 말고 병합하기</h3>
+<p>10월 1일 원본은 <code>cluster-metrics</code>와 <code>controlplane-metrics</code>가 분리된 schema v2를 사용했습니다. 컨트롤 플레인 수집에서 API 서버 및 etcd 대상은 기본 활성화되지만 스케줄러는 그렇지 않습니다. 최소 수집 프로파일에는 API 요청 카운터가 포함되지만 현재 실행 seat와 APF 거절 요청은 나열되어 있지 않습니다. 모든 API 서버 메트릭을 켜는 대신 이 두 메트릭을 명시적으로 추가하세요.</p>
+<p>이 YAML은 구성 조각이며 그대로 적용할 수 있는 완전한 매니페스트가 아닙니다. 메타데이터, 다른 대상, keep-list, 수집 간격, 클러스터 측 구성을 보존하면서 검토된 설정 ConfigMap에 병합하세요. keep-list의 두 항목은 최소 수집을 확장하며, 이 조각은 스케줄러 수집을 켜지 않습니다. 기존 schema v1 파일이 있다면 버전을 섞지 말고 문서의 마이그레이션 절차를 따르세요.</p>
+<pre><code class="language-yaml">data:
+  schema-version: v2
+  controlplane-metrics: |-
+    default-targets-scrape-enabled: |-
+      apiserver = true
+      etcd = true
+    default-targets-metrics-keep-list: |-
+      apiserver = "apiserver_flowcontrol_current_executing_seats|apiserver_flowcontrol_rejected_requests_total"
+    minimal-ingestion-profile: |-
+      enabled = true</code></pre>
+<p>v2에서는 <code>default-targets-scrape-enabled</code>, 컨트롤 플레인 섹션 안에서 이전 <code>controlplane-</code> 접두사를 뺀 대상 이름, 중첩된 <code>minimal-ingestion-profile</code> 구성을 사용합니다. 스케줄링 분석이 필요하다면 <code>kube-scheduler</code> 활성화와 필요한 메트릭 유지는 별도로 검토할 변경입니다. keep-list 항목은 수집 의도를 나타낼 뿐, 대상이 해당 메트릭을 노출하거나 전달한다는 증거는 아닙니다.</p>
+<p>검토된 전체 ConfigMap을 적용하는 것은 수집 동작을 바꾸는 Kubernetes 쓰기 작업입니다. 다음 명령은 그 효과를 명시적으로 보여줍니다. 위 조각을 전체 파일처럼 적용하지 마세요. 병합된 설정을 다시 읽고 작업 영역에서 실제 시계열을 확인하세요. 관리형 Prometheus 전체 수집을 끄는 것은 컨트롤 플레인만 변경한 작업에 대한 제한적인 롤백이 아닙니다.</p>
+<pre><code class="language-powershell">$ReviewedConfigPath = "REPLACE_WITH_REVIEWED_COMPLETE_CONFIGMAP.yaml"
+kubectl apply --filename $ReviewedConfigPath</code></pre>
+
+<h2 id="queries">7. 올바른 유형, 범위, 시간 구간으로 쿼리하기</h2>
+<p>아래 PromQL은 모두 읽기 전용 예시입니다. <code>REPLACE_SCOPE_LABEL</code>과 <code>REPLACE_SCOPE_VALUE</code>를 정확히 하나의 클러스터를 선택하는 확인된 라벨과 값으로 바꾸고, <code>REPLACE_TARGET_LABEL</code>과 <code>REPLACE_TARGET_VALUE</code>를 해당 컨트롤 플레인 대상의 라벨과 값으로 바꾸세요. 작업 영역의 시계열 탐색기에서 확인하고 라벨 이름, 클러스터 별칭, 대상 값을 가정하지 마세요. 첫 번째 그룹은 API 서버 대상, 스케줄링은 스케줄러 대상, 데이터베이스 크기는 etcd 대상을 사용합니다. 모든 분자와 분모에 이 범위를 유지하세요. 집계 전에 복제본 식별 정보와 중복 수집 여부를 확인하세요.</p>
+<h3>시계열 수는 수집 확인이고 게이지는 점유량</h3>
+<pre><code class="language-promql">count(apiserver_request_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"})
+count(apiserver_flowcontrol_current_executing_seats{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"})
+
+sum(apiserver_flowcontrol_current_executing_seats{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"})</code></pre>
+<p>처음 두 식은 요청이나 점유 seat가 아니라 반환된 라벨 조합을 셉니다. 세 번째 식은 각 평가 시점에서 선택한 시계열의 순간 게이지 값을 더합니다. 범위 그래프는 이 계산을 시간에 따라 반복하며, 모든 타임스탬프의 값을 한꺼번에 더하지 않습니다. 이 점유량 게이지에는 <code>rate()</code>나 <code>increase()</code>를 적용하지 마세요. 진단할 때는 전체 합계만 보지 말고 우선순위 수준별 보기도 유지하세요.</p>
+<h3>카운터 변화량과 속도는 다른 질문에 답함</h3>
+<pre><code class="language-promql">sum by (code) (
+  increase(apiserver_request_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}[5m])
+)
+
+sum by (code) (
+  rate(apiserver_request_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}[5m])
+)
+
+100 *
+sum(rate(apiserver_request_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE",code=~"429|5.."}[5m]))
+/
+sum(rate(apiserver_request_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}[5m]))
+
+sum(
+  increase(apiserver_flowcontrol_rejected_requests_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}[5m])
+)</code></pre>
+<p>시계열별 초기화를 처리할 수 있도록 먼저 각 카운터에 범위 함수를 적용하고 나서 합산하세요. <code>increase()</code>는 구간의 변화량을 추정하며 외삽 때문에 소수 값을 반환할 수 있습니다. <code>rate()</code>는 평균 초당 속도를 제공합니다. 5분은 분석 구간의 예시이지 수집 간격이나 보편적인 경고 규칙이 아닙니다. 샘플이 충분한 구간을 선택하고 공백이나 재시작을 조사할 때는 원시 시계열을 유지하세요.</p>
+<p>백분율은 선택한 전체 API 요청 중 HTTP 429와 5xx 응답을 합친 비율입니다. 용량 점수나 애플리케이션 오류율이 아닙니다. 일치하는 오류 시계열이 없으면 결과가 없을 수 있고, 트래픽이 없으면 분모가 0이 될 수 있습니다. 무조건적인 0 대체로 관측 데이터 누락을 숨기지 마세요. APF 거절은 흐름 제어 진단에 도움이 되지만 HTTP 오류에 더하면 같은 요청을 중복 계산할 수 있습니다. 사용 가능한 우선순위 수준 및 이유 라벨을 별도로 확인하세요.</p>
+<h3>스케줄러 시도와 파티션별 데이터베이스 크기</h3>
+<pre><code class="language-promql">sum by (result) (
+  rate(scheduler_schedule_attempts_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}[5m])
+)
+
+max by (REPLACE_PARTITION_LABEL) (
+  etcd_mvcc_db_total_size_in_bytes{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}
+) / (1024 * 1024 * 1024)</code></pre>
+<p>결과 그룹을 해석하기 전에 스케줄러의 실제 <code>result</code> 라벨과 값을 확인하세요. 실패한 시도 수는 실패한 고유 Pod 수가 아닙니다. Hyperscale 문서는 접미사가 붙은 스케줄러 이름도 나열하지만 기본 수집 참조 문서는 여기서 사용하는 정식 카운터를 나열합니다. 문서에 나온 모든 변형이 존재한다고 가정하지 말고 실제 노출된 시계열을 확인하세요. 어느 식도 Pod Ready 지연 시간을 측정하지 않습니다.</p>
+<p>실제 리소스 파티션 차원을 확인한 뒤에만 <code>REPLACE_PARTITION_LABEL</code>을 바꾸세요. etcd 식은 파티션별 가장 큰 복제본 데이터베이스 크기를 GiB로 반환하며, 데이터베이스 크기의 합이나 사용률을 반환하지 않습니다. 게이지이므로 카운터 속도를 적용하지 않습니다. 필요한 파티션 라벨이나 메트릭이 없다면 문서화된 플랫폼 데이터베이스 사용률 메트릭의 리소스 유형 차원을 사용하거나 수집을 수정하세요. 모든 파티션을 하나의 통합 용량처럼 조용히 합쳐서는 안 됩니다.</p>
+
+<h2 id="observations">8. 10월 1일 관측이 실제로 입증하는 것</h2>
+<p>과거 원본은 저부하 클러스터 하나와 Deployment 10개에 각각 Pod 3개를 사용하는 소규모 예시 시나리오를 설명합니다. Schema v2 관리형 Prometheus 구성과 API 요청 및 실행 seat 시계열 반환을 확인했습니다. 최대 클러스터 용량이나 조건을 맞춘 H2 대 H4 성능 비교를 입증하지는 않습니다. API 카운터 캡처와 seat 캡처는 서로 다른 시점에 이루어졌으므로 동기화된 하나의 부하 샘플처럼 연결하면 안 됩니다.</p>
+<table>
+  <thead><tr><th>수집 또는 게이지 관측</th><th>값</th><th>의미</th></tr></thead>
+  <tbody>
+    <tr><td>반환된 API 요청 시계열</td><td>894</td><td>전체 요청 수가 아니라 라벨 조합 수</td></tr>
+    <tr><td>반환된 실행 seat 시계열</td><td>18</td><td>Seat 점유량이 아니라 라벨 조합 수</td></tr>
+    <tr><td>Seat 그래프의 대략적인 이전 값</td><td>3</td><td>그래프 평가 시점의 합계</td></tr>
+    <tr><td>Seat 그래프에서 관측된 상한 값</td><td>6</td><td>샘플링된 점유량이며 지속 가능한 최대 용량이 아님</td></tr>
+    <tr><td>Seat 그래프 범례 평균</td><td>4.45</td><td>표시된 시계열의 요약이며 현재 점유량이 아님</td></tr>
+    <tr><td>Seat Grid 값</td><td>6</td><td>Grid 평가 시점의 합계</td></tr>
+  </tbody>
+</table>
+<p>Grid 평가 시각은 10월 1일 16:37:34.673 KST였습니다. 이는 쿼리 평가 타임스탬프이며 모든 원본 복제본이 정확히 그 순간 수집되었다는 증거가 아닙니다. 그래프는 대략 3에서 6으로 변하는 모습을 보였으며, 샘플링은 짧은 피크를 놓칠 수 있습니다. 범례 평균 4.45는 시간 가중 평균임이 보장되지 않으며, 메트릭 범위와 용량 의미가 일치하는지 확인하지 않고 이 값들을 1,750으로 나누어도 공식 H2 사용률을 입증할 수 없습니다.</p>
+<p>별도의 API 쿼리는 16:23 KST 무렵 원시 요청 카운터를 응답 코드별로 합산했습니다. 다음은 당시 표시된 누적 합계이며, 5분 증가량도 아니고 교체된 인스턴스까지 포함한 완전한 수명 주기 총계도 아닙니다.</p>
+<table>
+  <thead><tr><th>HTTP 응답 코드</th><th>표시된 누적 카운터 합계</th></tr></thead>
+  <tbody>
+    <tr><td>200</td><td>22,954</td></tr>
+    <tr><td>201</td><td>3,494</td></tr>
+    <tr><td>304</td><td>32</td></tr>
+    <tr><td>403</td><td>211</td></tr>
+    <tr><td>404</td><td>1,018</td></tr>
+    <tr><td>409</td><td>321</td></tr>
+    <tr><td>429</td><td>53</td></tr>
+    <tr><td>500</td><td>36</td></tr>
+    <tr><td>503</td><td>8</td></tr>
+  </tbody>
+</table>
+<p>특히 누적 HTTP 429 응답 53은 최근 30분 동안 53건이 거절되었다는 뜻이 아니며, 이 시나리오에서 과부하가 있었다거나 H2가 너무 작았다는 증거도 아닙니다. 403은 권한 조사를 가리키며, 409는 객체 업데이트 충돌과 관련될 수 있습니다. 429는 제한된 APF 우선순위 수준을 반영할 수 있고, 503은 API 서버 준비 상태나 집계 API 백엔드와 관련될 수 있습니다. 원인을 판단하기 전에 최근 구간의 변화량을 지연 시간, APF 신호, 적절히 보호된 로그와 연계하세요.</p>
+<p>보존한 근거는 수집 경로 확인과 메트릭 해석 설명을 뒷받침합니다. 지속적인 포화, 스케줄링 속도 측정, 파티션별 스토리지 압박, 크기 변경 소요 시간, 무중단, H4의 개선 효과, 애플리케이션 시작 성능을 입증하지는 않습니다. 원본 스크린샷이나 원시 환경 출력은 다시 게시하지 않습니다.</p>
+
+<h2 id="decisions">9. 관측을 운영 의사 결정으로 연결하기</h2>
+<table>
+  <thead><tr><th>신호</th><th>첫 조사</th><th>가능한 다음 단계</th></tr></thead>
+  <tbody>
+    <tr><td>높은 seat와 최근 APF 거절 증가를 동반한 지속적인 API 지연</td><td>우선순위 수준별 수요, 요청 구성, list/watch 동작, 재시도, webhook 확인</td><td>불필요한 API 작업을 줄이고 대표성 있는 근거가 있을 때만 다른 크기 평가</td></tr>
+    <tr><td>API 용량에 여유가 있는데 스케줄링 불가 시도가 발생</td><td>노드 리소스, taint, affinity, 볼륨 토폴로지, Pod 요청 확인</td><td>더 큰 컨트롤 플레인이 해결한다고 가정하지 말고 배치나 워커 용량 수정</td></tr>
+    <tr><td>스케줄링된 Pod가 준비 상태가 되지 않음</td><td>이미지, 볼륨, 초기화, 네트워크, 프로브 확인</td><td>워커와 애플리케이션 경로를 별도로 측정</td></tr>
+    <tr><td>다른 파티션은 작은데 하나의 etcd 파티션만 증가</td><td>리소스 수, 객체 크기, 보존 정책, 복제본 집계 검토</td><td>안전한 수명 주기 변경 계획 수립. H4/H8은 공개된 파티션당 스토리지를 늘리지 않음</td></tr>
+    <tr><td>구성 변경 후 그래프가 비어 있음</td><td>작업 영역 접근, 대상 활성화, 스키마, keep-list, 라벨, 수집 경과 시간 확인</td><td>데이터 부재를 정상적인 무부하로 해석하기 전에 관측 기능 복구</td></tr>
+  </tbody>
+</table>
+<p>유용한 평가 계획은 후보 크기 사이에서 워크로드 형태, 작업 구성, 클라이언트 동시성, 객체 수, 관측 기간을 동일하게 유지합니다. 리소스가 실제 보고한 크기, 수집 간격, 쿼리 범위, 누락 데이터, 클라이언트 완료 시간, 요청 지연 시간, 오류 변화량, 워커 용량을 기록하세요. 이는 앞으로 수행할 방법의 제안이며 여기서 실행한 테스트가 아닙니다. Deployment 10개 시연으로 벤치마크를 주장하지 마세요.</p>
+<ul>
+  <li>변경을 승인하기 전에 날짜가 명시된 Preview 자격 조건, 약관, 지역 할당량, 지원 도구를 확인하세요.</li>
+  <li>일반 클러스터 마이그레이션과 기존 Hyperscale 크기 업데이트를 구분하고, 데이터를 안전하게 지킬 롤백 계획을 유지하세요.</li>
+  <li>경고를 설정하거나 크기를 비교하기 전에 관측 범위와 카운터·게이지의 의미를 검증하세요.</li>
+  <li>API 동시성, 스케줄링 시도, Pod Ready 지연 시간, 파티션 증가 추이를 별도 패널로 유지하세요.</li>
+  <li>하나의 누적 오류 총계나 저부하 스크린샷 대신 지속적이고 서로 연관된 신호를 사용하세요.</li>
+  <li>최신 가격과 모든 관측 데이터, 워커, 네트워크, 스토리지 비용을 별도로 검토하세요. 이 글은 가격이나 SLA 결론을 제공하지 않습니다.</li>
+</ul>
+
+<h2 id="official-references">10. 공개 참조 문서와 날짜를 명시한 해석</h2>
+<p>다음 공개 참조 문서는 2026년 10월 7일에 확인했습니다. 위의 기능 제약과 메트릭 의미를 뒷받침할 뿐, 독자의 구독이 자격을 갖췄거나 어떤 명령이 성공적으로 실행되었다는 주장은 아닙니다. 과거 노트는 관측의 근거이며, 지원되는 수명 주기 설명은 공개 제품 문서를 기준으로 합니다.</p>
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/aks/hyperscale-configuration-aks">Microsoft Learn: 컨트롤 플레인 확장 프로파일을 사용하는 AKS Hyperscale 구성</a> — 크기 선택, Preview 약관, Standard/Premium 요구 사항, 사전 조건, 신규 클러스터 제한, 크기 변경, 파티션, 모니터링 지침.</li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/aks/control-plane-metrics-monitor">Microsoft Learn: AKS 컨트롤 플레인 메트릭 모니터링</a> — 관리형 수집, ID 및 Private Link 제한, schema v2, keep-list, 작업 영역 접근.</li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/containers/prometheus-metrics-scrape-default">Microsoft Learn: 기본 Prometheus 메트릭 구성</a> — 최소 수집, 대상 기본값, 정식 메트릭 이름. 이전 접두사가 붙은 섹션 제목은 v2 구성 키를 대신하지 않습니다.</li>
+  <li><a href="https://github.com/Azure/prometheus-collector/blob/main/otelcollector/configmaps/ama-metrics-settings-configmap.yaml">Azure Prometheus 수집기: 공개 설정 ConfigMap</a> — 유지 관리되는 스키마 참조. 모든 기본값을 무조건 적용하지 말고 병합 전에 변경 사항을 검토하세요.</li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/aks/quotas-skus-regions">Microsoft Learn: AKS 리소스, SKU, 지역 한도</a> — 기능별 Preview 클러스터 하나 제한과 구분되는 일반 할당량.</li>
+  <li><a href="https://kubernetes.io/docs/concepts/cluster-administration/flow-control/">Kubernetes: API Priority and Fairness</a> — seat 점유량, 요청 폭, 우선순위 수준, 대기열.</li>
+  <li><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/">Kubernetes: 스케줄러</a> — 애플리케이션 준비 상태가 아닌 노드 적합성, 점수 계산, 바인딩.</li>
+</ul>
+<p>원본 수준의 두 가지 모호함은 명시적으로 바로잡았습니다. Hyperscale 크기 간 변경은 지원되며, 스케줄링 용량은 크기 단계마다 두 배가 되지 않습니다. 문서의 두 가지 주의점은 그대로 드러냅니다. etcd의 GB와 GiB 표기 차이, 그리고 실제 검색이 필요한 스케줄러 메트릭 이름 변형입니다. 어느 것도 문서에 없는 보장을 추론할 이유가 되지 않습니다.</p>
+<h2 id="resources">참고 리소스</h2><p>이 주제에는 별도로 배포하는 참고 파일이 없습니다. 본문의 예제를 활용하고 아래 편집 안내에서 원본 자료의 제공 범위를 확인하세요.</p><h2 id="editorial-notes">편집 및 출처 안내</h2><p>다음 원본 자료를 하나의 기술 가이드로 정리했습니다.</p><ul><li>AKS Hyperscale 컨트롤 플레인 개념 및 실습 가이드, 2026년 10월 1일 검토</li><li>10월 1일 관리형 Prometheus 수집 및 저부하 API 관측</li><li>Microsoft Learn 및 Kubernetes 공개 문서, 2026년 10월 7일 확인</li></ul><ul><li>비공개 저장소 링크, 원본 스크린샷, 원시 출력, 계정 및 리소스 식별자, 작업 영역 이름, 호스트 이름, 주소, 자격 증명, 개인 경로는 게시하지 않습니다.</li><li>Deployment 10개에 각각 Pod 3개를 사용하는 원본 시나리오는 근거의 범위를 설명하는 용도로만 유지합니다. 부하 생성기, 배포 매니페스트, 파괴적인 정리 명령은 제공하지 않습니다.</li><li>관측에서 H2/H4 벤치마크, 포화 테스트, 처리량 개선, 애플리케이션 준비 시간, 가격, 가용성 측정값, SLA를 추론하지 않습니다.</li><li>모든 명령과 PromQL은 매개변수화한 예시입니다. 이 글을 위해 클라우드 명령, 프로비저닝, 크기 변경, 수집 설정 변경, 런타임 부하 테스트를 실행하지 않았습니다.</li><li>상위 원문의 크기 변경 및 두 배 증가 설명은 현재 공개 문서를 기준으로 바로잡았습니다. GB/GiB 불일치는 임의로 변환하지 않고 명시합니다. 본문의 쿼리 예시에 별도 다운로드는 필요하지 않습니다.</li></ul><p>원본 자격증명이나 비공개 저장소 링크는 포함하지 않습니다. 실제 구성값을 넣은 파일이나 운영 환경의 출력을 이 공개 사이트에 다시 올리지 마세요.</p></div>
+</article></main>
+<footer><span>Azure Tech Field Notes</span><span>개인 기술 기록이며 Microsoft의 공식 게시물이 아닙니다.</span><span>한국어판 &middot; 2026년 10월</span></footer>
+<div class="sr-only" id="status" role="status" aria-live="polite"></div>
+</body></html>

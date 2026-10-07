@@ -1,5 +1,5 @@
 {
-  "koSourceSha256": "ECEA6945E04C755A8763C24ADF75E11AA41F29DC89630C000A561AAF362B4DB8",
+  "koSourceSha256": "E5EBD2383A551010DFC4203E979FCAD36716132574403C54493BB43ED7A653E2",
   "en": {
     "homeTitle": "Home",
     "homeDescription": "Azure engineering guides, measured findings, and parameterized resources in English and Korean.",
@@ -10,7 +10,8 @@
     "language": "Language",
     "footer": "Independent technical notes. Not an official Microsoft publication.",
     "edition": "English edition",
-    "editionDate": "September 2026",
+    "editionDate": "October 2026",
+    "archiveEditionDate": "September 2026",
     "eyebrow": "AZURE / APPLIED ENGINEERING",
     "heroHtml": "From investigation<br>to implementation.",
     "lead": "Practical field notes on AI gateways, Kubernetes, App Service, and GitHub automation. Procedures, measured results, and the caveats that matter.",
@@ -73,7 +74,8 @@
     "language": "언어",
     "footer": "개인 기술 기록이며 Microsoft의 공식 게시물이 아닙니다.",
     "edition": "한국어판",
-    "editionDate": "2026년 9월",
+    "editionDate": "2026년 10월",
+    "archiveEditionDate": "2026년 9월",
     "eyebrow": "AZURE / 실무 기술 기록",
     "heroHtml": "기술 검토에서<br>실제 구성까지.",
     "lead": "AI Gateway, Kubernetes, App Service, GitHub 자동화의 실무 기술 기록입니다. 구성 절차와 실측 결과, 그리고 놓치지 말아야 할 제약을 함께 정리했습니다.",

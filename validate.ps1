@@ -9,9 +9,13 @@ Read-KoreanVisualText
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Web.Extensions
 $jsonParser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-if ($manifest.topicCount -ne 13) { throw 'The public edition must contain exactly 13 topics.' }
+if ($manifest.topicCount -ne 16) { throw 'The public edition must contain exactly 16 topics.' }
 Assert-SameSequence @('en','ko') @($manifest.languages) 'published languages'
-if ($manifest.pageCount -ne 28) { throw 'Expected 28 bilingual pages.' }
+if ($manifest.pageCount -ne 34) { throw 'Expected 34 bilingual pages.' }
+foreach ($slug in @('openai-foundry-migration','hosted-agent-latency','aks-hyperscale')) {
+    $category = if ($slug -eq 'aks-hyperscale') { 'AKS' } else { 'AI' }
+    if (@($manifest.topics | Where-Object { $_.slug -eq $slug -and $_.category -eq $category -and $_.publishedOn -eq '2026-10-07' }).Count -ne 1) { throw "New topic missing or incorrect: $slug" }
+}
 if (@($manifest.topics | Where-Object { $_.slug -eq 'aks-confidential-vm' -and $_.category -eq 'AKS' }).Count -ne 1) { throw 'The AKS CVM topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.slug -eq 'content-safety-streaming' -and $_.category -eq 'AI' }).Count -ne 1) { throw 'The Content Safety streaming topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.slug -eq 'self-hosted-aca' -and $_.category -eq 'GitHub' }).Count -ne 1) { throw 'The GitHub ACA runner topic is missing or duplicated.' }
@@ -19,7 +23,7 @@ if (@($manifest.topics | Where-Object { $_.category -eq 'App Modernization' }).C
 $files = @(Get-ChildItem $root -File -Recurse -Force)
 $problems = New-Object 'System.Collections.Generic.List[string]'
 $htmlFiles = @($files | Where-Object { $_.Extension -eq '.html' })
-if ($htmlFiles.Count -ne 28) { $problems.Add("Expected 28 HTML files, found $($htmlFiles.Count).") }
+if ($htmlFiles.Count -ne 34) { $problems.Add("Expected 34 HTML files, found $($htmlFiles.Count).") }
 $guidPattern = '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'
 $publicRoleIds = @('5e0bd9bd-7b93-4f28-af87-19fc36ad61bd') # Cognitive Services OpenAI User.
 $checks = @{
@@ -103,7 +107,7 @@ foreach ($file in $htmlFiles) {
         if ($tag.Value -notmatch 'alt="[^"]+"' -or $tag.Value -notmatch 'width="\d+"' -or $tag.Value -notmatch 'height="\d+"') { $problems.Add("$($file.Name): missing image accessibility/dimensions.") }
     }
     $svgs = [regex]::Matches($html, '<svg\b.*?</svg>', 'Singleline')
-    $expectedSvgCount = if ($file.Name -eq 'index.html') { $manifest.topicCount } elseif ($file.BaseName -in @('translation-performance','ase-frontend-scaling')) { 2 } else { 1 }
+    $expectedSvgCount = if ($file.Name -eq 'index.html') { $manifest.topicCount } elseif ($visuals.($file.BaseName).chart) { 2 } else { 1 }
     if ($svgs.Count -ne $expectedSvgCount) { $problems.Add("$($file.Name): expected $expectedSvgCount visual(s), found $($svgs.Count).") }
     foreach ($svg in $svgs) {
         try { $null = [xml]$svg.Value } catch { $problems.Add("$($file.Name): malformed SVG.") }
@@ -140,6 +144,8 @@ foreach($metadata in Get-ChildItem (Join-Path $PSScriptRoot 'content') -Filter '
         $expectedPre=@([regex]::Matches($expectedBody,'<pre\b[^>]*>.*?</pre>','Singleline')|ForEach-Object{$_.Value.Replace("`r`n","`n")})
         $renderedPre=@([regex]::Matches($pageText,'<pre\b[^>]*>.*?</pre>','Singleline')|ForEach-Object{$_.Value.Replace("`r`n","`n")})
         Assert-SameSequence $expectedPre $renderedPre "$relative rendered examples"
+        $dateMarkup = if ($english.publishedOn) { '<time datetime="' + $english.publishedOn + '">' + $english.publishedOn + '</time>' } else { [System.Net.WebUtility]::HtmlEncode((Ui $language 'archiveEditionDate')) }
+        if ($pageText -notmatch ('<div class="article-meta">.*?' + [regex]::Escape($dateMarkup) + '</span></div>')) { $problems.Add("Article date mismatch: $relative") }
     }
 }
 if(Test-Path (Join-Path $root 'ko\downloads')){$problems.Add('Korean locale must use shared downloads, not duplicated files.')}
@@ -158,6 +164,18 @@ foreach ($row in $visualData.'ase-frontend-scaling'.chart.rows) {
     $sourcePattern = '<td>' + $labelParts[0] + ' &#8594; ' + $labelParts[2] + '</td><td>' + $row.value + ' minutes</td>'
     $normalized = $ase.Replace([string][char]0x2192, '&#8594;')
     if ($normalized -notmatch $sourcePattern) { $problems.Add("ASE chart value not found in source table: $($row.label)") }
+}
+$latency = Get-Content (Join-Path $PSScriptRoot 'content\hosted-agent-latency.html') -Raw -Encoding UTF8
+$measurementSection = [regex]::Match($latency, '<h2 id="measurements">.*?(?=<h2\b)', 'Singleline').Value
+$measurementRows = [regex]::Matches($measurementSection, '<tr><td>(\d+)</td><td>(Cold|Warm|Resume)</td><td>([ABC]):[^<]*</td><td>(\d+\.\d+)</td></tr>')
+$chart = $visualData.'hosted-agent-latency'.chart
+if ($measurementRows.Count -ne 5 -or @($chart.rows).Count -ne 5 -or $chart.unit -ne 'seconds') { $problems.Add('Hosted latency chart must preserve all five observations in seconds.') }
+for ($i=0; $i -lt $measurementRows.Count; $i++) {
+    $row = $chart.rows[$i]
+    $record = $measurementRows[$i]
+    $value = [double]::Parse($record.Groups[4].Value, [System.Globalization.CultureInfo]::InvariantCulture)
+    $label = $record.Groups[2].Value + ' ' + $record.Groups[3].Value
+    if ($row.sourceRow -ne [int]$record.Groups[1].Value -or $row.label -cne $label -or $row.value -ne $value) { $problems.Add("Hosted latency chart differs from source row $($i + 1).") }
 }
 foreach ($resource in $manifest.resources) {
     $publishedPath = Resolve-Within $root $resource
@@ -195,4 +213,4 @@ $cell = [regex]::Match($changedMeasurement.bodyHtml, '<td>(\d[\d,.]*)</td>')
 if (-not $cell.Success) { throw 'Measurement regression fixture is missing.' }
 $changedMeasurement.bodyHtml = $changedMeasurement.bodyHtml.Remove($cell.Groups[1].Index, $cell.Groups[1].Length).Insert($cell.Groups[1].Index, '999999999')
 Assert-ValidationRejects { Assert-ArticleParity $translation $changedMeasurement } 'measurement cell'
-Write-Output "Validated $($manifest.topicCount) bilingual topics, 28 pages, $($manifest.resources.Count) shared resources, locale links, source/UI fingerprints, code/measurement parity, rejection regressions, and publication safeguards."
+Write-Output "Validated $($manifest.topicCount) bilingual topics, $($manifest.pageCount) pages, $($manifest.resources.Count) shared resources, publication dates, locale links, source/UI fingerprints, code/measurement parity, rejection regressions, and publication safeguards."

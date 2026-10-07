@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<title>AKS Hyperscale Control Plane: Size the Bottleneck, Read the Metrics | Azure Tech Field Notes</title>
+<meta name="description" content="A practical Preview guide to H2/H4/H8, independent etcd partitions, supported lifecycle changes, schema v2 managed Prometheus, and what a small October 1 observation can—and cannot—prove.">
+<link rel="canonical" href="https://junpark12.github.io/azuretech/topics/aks-hyperscale.html">
+<link rel="alternate" hreflang="en" href="https://junpark12.github.io/azuretech/topics/aks-hyperscale.html">
+<link rel="alternate" hreflang="ko" href="https://junpark12.github.io/azuretech/ko/topics/aks-hyperscale.html">
+<link rel="alternate" hreflang="x-default" href="https://junpark12.github.io/azuretech/topics/aks-hyperscale.html">
+<link rel="stylesheet" href="../assets/site.css">
+<script src="../assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header"><a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">AT</span><span>Azure Tech<span class="brand-subtitle">FIELD NOTES</span></span></a><nav aria-label="Site"><a href="../index.html">All topics</a><div class="language-switch" role="group" aria-label="Language"><a class="language-link" href="../ko/topics/aks-hyperscale.html" hreflang="ko" lang="ko">&#54620;&#44397;&#50612;</a><a class="language-link" href="aks-hyperscale.html" hreflang="en" lang="en" aria-current="page">English</a></div><button id="theme-toggle" type="button">Switch theme</button></nav></header>
+<main id="main" class="topic-layout">
+<aside class="toc"><details open><summary>On this page</summary><ol><li><a href="#visual-overview">Architecture at a glance</a></li><li><a href="#applicability">1. Start with the control-plane problem</a></li><li><a href="#sizing">2. H2, H4, and H8 describe different capacity dimensions</a></li><li><a href="#partitions">3. Six etcd partitions are six separate limits</a></li><li><a href="#lifecycle">4. Distinguish migration from size adjustment</a></li><li><a href="#prerequisites">5. Establish eligibility with read-only discovery</a></li><li><a href="#observability">6. Make collection explicit before interpreting a graph</a></li><li><a href="#queries">7. Query the right type, scope, and time window</a></li><li><a href="#observations">8. What the October 1 observation actually establishes</a></li><li><a href="#decisions">9. Turn observations into an operational decision</a></li><li><a href="#official-references">10. Public references and dated interpretation</a></li><li><a href="#resources">Resources</a></li><li><a href="#editorial-notes">Editorial notes</a></li></ol></details><a class="back-link" href="../index.html">&#8592; All topics</a></aside>
+<article class="article"><header class="article-header"><p class="eyebrow">AKS / FIELD NOTE</p><h1>AKS Hyperscale Control Plane: Size the Bottleneck, Read the Metrics</h1><p class="lead">A practical Preview guide to H2/H4/H8, independent etcd partitions, supported lifecycle changes, schema v2 managed Prometheus, and what a small October 1 observation can—and cannot—prove.</p><div class="article-meta"><span>English edition</span><span>Parameterized examples</span><span><time datetime="2026-10-07">2026-10-07</time></span></div><p class="translation-note">The Korean edition follows this reviewed English article. Code, downloadable resources, diagram labels, and English Azure Portal captures are shared between editions.</p></header>
+<aside class="editorial-note"><strong>Environment-specific evidence.</strong> Measurements and preview behavior reflect the source investigation. They are not current service guarantees. All configuration values must be supplied for your own environment.</aside>
+<figure class="technical-visual"><div class="visual-heading"><span class="eyebrow">ARCHITECTURE AT A GLANCE</span><h2 id="visual-overview">Control-plane capacity is not worker readiness</h2></div><div class="visual-canvas" tabindex="0" role="region" aria-label="Scrollable architecture diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 344" role="img" aria-label="Control-plane capacity is not worker readiness. Simplified responsibility map, not a benchmark or full Kubernetes architecture. API Priority and Fairness controls concurrent API work; etcd uses six resource partitions with independent limits. Scheduling selects workers, while image pulls, storage, startup and probes determine later readiness. Controller loops and many bidirectional interactions are omitted."><defs><marker id="arrow-aks-hyperscale-article" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="diagram-arrow" d="M0 0L8 4L0 8z"/></marker></defs><path class="diagram-guide" d="M24 32H696M24 324H696"/><text class="diagram-kicker" x="24" y="23">SYSTEM VIEW / AKS HYPERSCALE</text><path class="diagram-edge" marker-end="url(#arrow-aks-hyperscale-article)" d="M194 112 H275"/><text class="diagram-edge-label" x="234" y="100">API work</text><path class="diagram-edge" marker-end="url(#arrow-aks-hyperscale-article)" d="M445 112 H526"/><text class="diagram-edge-label" x="484" y="100">state</text><path class="diagram-edge diagram-dashed" marker-end="url(#arrow-aks-hyperscale-article)" d="M360 152 V232"/><text class="diagram-edge-label" x="407" y="196">watch / bind</text><path class="diagram-edge" marker-end="url(#arrow-aks-hyperscale-article)" d="M445 272 H526"/><text class="diagram-edge-label" x="484" y="260">placement</text><g class="diagram-node" transform="translate(24 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><rect x="1" y="2" width="26" height="18" rx="3"/><path d="M8 26h12M14 20v6M6 8l3 3-3 3M13 14h7"/></g></g><text class="diagram-node-title" x="12" y="47">API clients</text><text class="diagram-node-detail" x="12" y="65">Controllers + operators</text></g><g class="diagram-node diagram-accent" transform="translate(275 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><path d="M3 26V3h22v23M1 26h26M9 26V13h10v13M8 8h12"/></g></g><text class="diagram-node-title" x="12" y="47">API server + APF</text><text class="diagram-node-detail" x="12" y="65">Seats are concurrency</text></g><g class="diagram-node" transform="translate(526 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><ellipse cx="14" cy="5" rx="12" ry="4"/><path d="M2 5v18c0 6 24 6 24 0V5M2 14c0 6 24 6 24 0"/></g></g><text class="diagram-node-title" x="12" y="47">Six etcd partitions</text><text class="diagram-node-detail" x="12" y="65">Independent storage</text></g><g class="diagram-node" transform="translate(275 232)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><circle cx="14" cy="14" r="7"/><path d="M14 1v6M14 21v6M1 14h6M21 14h6M5 5l4 4M19 19l4 4M5 23l4-4M19 9l4-4"/></g></g><text class="diagram-node-title" x="12" y="47">Scheduler</text><text class="diagram-node-detail" x="12" y="65">Feasibility + binding</text></g><g class="diagram-node" transform="translate(526 232)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><rect x="1" y="1" width="10" height="10" rx="2"/><rect x="17" y="1" width="10" height="10" rx="2"/><rect x="9" y="19" width="10" height="10" rx="2"/><path d="M6 11v4h16v-4M14 15v4"/></g></g><text class="diagram-node-title" x="12" y="47">Worker lifecycle</text><text class="diagram-node-detail" x="12" y="65">Images, volumes, Ready</text></g></svg></div><figcaption>Simplified responsibility map, not a benchmark or full Kubernetes architecture. API Priority and Fairness controls concurrent API work; etcd uses six resource partitions with independent limits. Scheduling selects workers, while image pulls, storage, startup and probes determine later readiness. Controller loops and many bidirectional interactions are omitted. Lines show the relationships labeled above; dashed lines distinguish configuration or other non-primary paths. The full procedure below explains the details.</figcaption></figure>
+<div class="article-body"><h2 id="applicability">1. Start with the control-plane problem</h2>
+<p>AKS Hyperscale preprovisions control-plane capacity for workloads with unusually high Kubernetes API concurrency, Pod churn, or scheduling demand. It is not a worker-node scaling feature. The API server, scheduler, controllers, and etcd manage desired state; worker nodes supply the CPU, memory, networking, and storage that run applications. A larger control plane does not create GPU capacity, repair an image pull, or make an unsuitable node satisfy a Pod's placement constraints.</p>
+<blockquote><p>This is an unofficial technical field note, published October 7, 2026. The observations are historical, from October 1, 2026, and are not new tests, product guarantees, pricing policy, or an SLA. Hyperscale remains Preview in the public documentation checked for this article. That documentation says AKS previews are provided as-is/as-available, excluded from service-level agreements and limited warranty, supported on a best-effort basis, and not intended for production use. Recheck the current terms and support matrix before any decision.</p></blockquote>
+<p>The default AKS control-plane mode dynamically adjusts capacity and remains the documented recommendation for most workloads. Hyperscale is worth evaluating when representative evidence points to control-plane pressure: for example, many deployment controllers acting together, distributed batch-job creation, or predictable bursts of API activity. Public documentation discusses mission-critical use cases, but that positioning does not override its Preview production-use warning.</p>
+<p>Separate three questions before selecting a size: are API clients waiting for service, are Pods waiting for scheduling, or are already scheduled Pods waiting to become Ready? These are different queues with different owners. Record client-side timeouts too: requests that never reach the API server may not appear in its request counters.</p>
+
+<h2 id="sizing">2. H2, H4, and H8 describe different capacity dimensions</h2>
+<p>The following figures are the published sizing characteristics checked on October 7, not measured results from this article. The official table calls the concurrency column “Kube API Server flow control executing requests”; the monitoring guidance expresses current usage as API Priority and Fairness (APF) execution seats. Do not reinterpret the values as application requests per second.</p>
+<table>
+  <thead><tr><th>Size</th><th>Published flow-control concurrency</th><th>Published scheduling rate, Pods/s</th><th>etcd partition count</th><th>Storage per partition</th></tr></thead>
+  <tbody>
+    <tr><td>H2</td><td>1,750</td><td>200</td><td>6</td><td>8 GiB</td></tr>
+    <tr><td>H4</td><td>3,500</td><td>300</td><td>6</td><td>8 GiB</td></tr>
+    <tr><td>H8</td><td>7,000</td><td>400</td><td>6</td><td>8 GiB</td></tr>
+  </tbody>
+</table>
+<h3>Seats are concurrency, not request rate</h3>
+<p>An APF seat is a unit of concurrent work. Some requests, such as large lists, can occupy multiple seats; request duration also affects how long seats remain occupied. The same request rate can therefore produce different occupancy. APF divides work into priority levels with queuing and concurrency controls, so a particular level can be constrained even when a cluster-wide sum looks small. Do not change APF policies simply to make a graph fall.</p>
+<h3>Scheduling is not application readiness</h3>
+<p>Scheduling chooses a feasible node and binds the Pod. Image downloads, volume attachment, container startup, initialization, and readiness probes happen later. Scheduler attempt counters can include unsuccessful attempts and retries; their rate is not the number of unique Pods becoming Ready. Investigate resource requests, taints, affinity, and storage constraints before attributing unschedulable Pods to control-plane capacity.</p>
+<p>Concurrency doubles between these published sizes, but the scheduling figures increase from 200 to 300 to 400—not by a factor of two at each step. The field guide already flags an upstream claim to the contrary. There is no measured speedup, price-per-Pod comparison, or availability promise here. Standard/Premium pricing tier and H2/H4/H8 control-plane size are separate settings; neither replaces worker sizing or a current cost review.</p>
+
+<h2 id="partitions">3. Six etcd partitions are six separate limits</h2>
+<p>Hyperscale separates etcd into six clusters by resource category. The storage number is per partition, not an interchangeable pool that any resource type can consume. Moving from H2 to H4 or H8 does not increase the published partition count or per-partition storage.</p>
+<table>
+  <thead><tr><th>Partition</th><th>Stored Kubernetes resources</th><th>Operational question</th></tr></thead>
+  <tbody>
+    <tr><td>Events</td><td>Event objects</td><td>Is repeated failure producing avoidable event churn?</td></tr>
+    <tr><td>Leases</td><td>Coordination leases</td><td>Is the coordination-object population expected?</td></tr>
+    <tr><td>Nodes</td><td>Node objects</td><td>Do node records match the intended fleet lifecycle?</td></tr>
+    <tr><td>Pods</td><td>Pod objects</td><td>Are completed or obsolete workload objects accumulating?</td></tr>
+    <tr><td>Secrets</td><td>Secret objects</td><td>Are object size and retention appropriate, without exposing contents?</td></tr>
+    <tr><td>Default</td><td>All remaining resources, including Deployments, Services, and ConfigMaps</td><td>Are retained custom resources or configuration objects growing?</td></tr>
+  </tbody>
+</table>
+<p>Track the fullest partition and its growth, not the average across all six. Replica database sizes must not be added together as though each replica represented different stored objects. Inspect the returned partition and instance labels, then take the maximum across replicas within each partition. If the partition identity is absent, resolve that telemetry gap rather than inventing a label.</p>
+<p>The public page recommends designing for 2 GB or less per partition and reviewing resource counts when a partition approaches 50% utilization. It also describes an 8 GB hard limit in prose while its sizing table says 8 GiB. This unit inconsistency is unresolved here: the table above preserves GiB, while the recommendations preserve the page's wording. Do not turn the discrepancy into an exact byte-based alert threshold without confirmation. A larger control-plane size is not a storage-retention strategy; review object lifecycles before any approved cleanup.</p>
+
+<h2 id="lifecycle">4. Distinguish migration from size adjustment</h2>
+<p>The public Hyperscale guide explicitly documents resizing an existing Hyperscale cluster. Its “new clusters only” limitation concerns adding the profile to an ordinary cluster, not changing the size of a profile already present. This resolves the older upstream statement, noted by the field guide, that changing H4 to H2 or H8 required a rebuild.</p>
+<table>
+  <thead><tr><th>Operation</th><th>Documented position on October 7, 2026</th><th>Planning consequence</th></tr></thead>
+  <tbody>
+    <tr><td>Ordinary control plane to Hyperscale</td><td>Cannot add the profile to an existing cluster</td><td>Create a new eligible cluster and plan workload/data migration</td></tr>
+    <tr><td>H2, H4, or H8 to another Hyperscale size</td><td>Supported through the control-plane size update operation</td><td>Review demand and change risk; verify resulting profile and telemetry</td></tr>
+    <tr><td>Hyperscale to ordinary control plane</td><td>Cannot remove the profile after creation</td><td>Plan replacement and migration; deletion is not a rollback procedure</td></tr>
+    <tr><td>Provisioning tools</td><td>Azure CLI with aks-preview, REST API, and ARM templates are documented; SDKs and Terraform are not supported in the Preview guide</td><td>Do not infer support merely because a client can submit a property</td></tr>
+  </tbody>
+</table>
+<p>The following PowerShell example is illustrative, not executed. The first command is a write: it requests an H4 control-plane size for an already-enabled Hyperscale cluster. It does not enable Hyperscale on an ordinary cluster, resize worker pools, or guarantee a disruption-free change. Replace the placeholders, obtain change approval, and review current service behavior before use. The second command only reads the resulting profile.</p>
+<pre><code class="language-powershell">$ResourceGroup = "REPLACE_RESOURCE_GROUP"
+$ClusterName = "REPLACE_CLUSTER_NAME"
+az aks update --resource-group $ResourceGroup --name $ClusterName --control-plane-scaling-size H4
+az aks show --resource-group $ResourceGroup --name $ClusterName --query controlPlaneScalingProfile --output json</code></pre>
+<p>A replacement plan must cover identities, network dependencies, policies, persistent data, backup/restore validation, DNS or traffic cutover, and a rollback window. The Preview limit of one Hyperscale cluster per subscription per region can constrain a side-by-side replacement. Resolve quota and placement before depending on that migration pattern; do not delete the current cluster merely to free a slot.</p>
+
+<h2 id="prerequisites">5. Establish eligibility with read-only discovery</h2>
+<p>As checked on October 7, the public prerequisites are an AKS Standard or Premium tier, Kubernetes 1.33.0 or later, the Azure CLI extension <code>aks-preview</code> version <code>21.0.0b8</code> or later, and the subscription feature <code>ControlPlaneScalingProfilePreview</code> registered. Free tier is not supported. The profile is selected at new-cluster creation, and the Preview permits one Hyperscale cluster per subscription per region. General AKS and worker VM quotas remain separate constraints.</p>
+<p>These examples are read-only discovery commands, not an executed validation. Use an already authenticated, deliberately selected Azure subscription and Kubernetes context. They do not sign in, switch subscriptions, download credentials, install an extension, or register a feature. Keep any environment-specific output private.</p>
+<pre><code class="language-powershell">$Location = "REPLACE_LOCATION"
+$ResourceGroup = "REPLACE_RESOURCE_GROUP"
+$ClusterName = "REPLACE_CLUSTER_NAME"
+az version
+az extension show --name aks-preview --query version --output tsv
+az feature show --namespace Microsoft.ContainerService --name ControlPlaneScalingProfilePreview --query properties.state --output tsv
+az provider show --namespace Microsoft.ContainerService --query registrationState --output tsv
+az aks get-versions --location $Location --output table
+az aks show --resource-group $ResourceGroup --name $ClusterName --query "{version:kubernetesVersion,tier:sku.tier,profile:controlPlaneScalingProfile,identityType:identity.type}" --output json
+kubectl config current-context
+kubectl get configmap ama-metrics-settings-configmap --namespace kube-system --output yaml</code></pre>
+<p>An extension-not-found result means tooling still needs preparation; a missing ConfigMap is not itself proof that managed Prometheus is disabled. The version list establishes Kubernetes offerings in that region, not Hyperscale eligibility, quota, or guaranteed capacity. Confirm those separately using the current Hyperscale and quota documentation. Registration, provider refresh, extension installation, and cluster creation all change state and are intentionally left to the approved setup procedure.</p>
+<p>Azure CNI Overlay is the public guide's recommendation for large Pod populations, not a requirement that excludes every other CNI. It also advises against the Azure Policy add-on for large clusters because of API load. Treat those as architecture trade-offs: do not remove required governance merely to follow a performance recommendation.</p>
+
+<h2 id="observability">6. Make collection explicit before interpreting a graph</h2>
+<p>Azure platform metrics and managed Prometheus are different telemetry surfaces. The Hyperscale page maps platform seat usage <code>apiserver_flowcontrol_executing_seats</code> to the Prometheus gauge <code>apiserver_flowcontrol_current_executing_seats</code>; platform scheduling uses <code>scheduler_schedule_attempts_rate</code>, while the Prometheus counter is <code>scheduler_schedule_attempts_total</code>. Do not paste a platform metric name into PromQL and assume an empty result means no load.</p>
+<p>The managed control-plane metrics guide requires managed identity authentication and Azure Monitor managed service for Prometheus; it lists Azure Private Link as unsupported for this collection feature. Self-hosted Prometheus is not the supported substitute for complete control-plane replica visibility. Control-plane scraping runs outside the node-side <code>ama-metrics</code> add-on, so healthy node collectors alone do not prove control-plane collection.</p>
+<p>Managed Prometheus onboarding and enabling control-plane metrics are separate steps. For a cluster already onboarded to the intended workspace, the following illustrative write enables control-plane collection. It can increase telemetry ingestion and cost. It does not choose or validate a workspace and has not been executed here.</p>
+<pre><code class="language-powershell">az aks update --resource-group $ResourceGroup --name $ClusterName --enable-control-plane-metrics</code></pre>
+<p>Verify access to the linked Azure Monitor workspace and query permission before diagnosing data loss. The public guide identifies Monitoring Reader or Monitoring Contributor for viewing workspace data. Configuration propagation and first samples can take several minutes; enabling collection does not backfill earlier history. Start with raw series in the time range after enablement, then use range functions after enough samples exist.</p>
+<h3>Schema v2: merge, do not overwrite</h3>
+<p>The October 1 source used schema v2, with separate <code>cluster-metrics</code> and <code>controlplane-metrics</code> sections. API-server and etcd targets are enabled by default for control-plane collection; the scheduler is not. The minimal profile includes the API request counter but does not list current executing seats or APF rejected requests. Add those two metrics deliberately rather than enabling every API-server metric.</p>
+<p>This YAML is a configuration fragment, not an apply-ready manifest. Merge it into the reviewed settings ConfigMap while preserving its metadata, other targets, keep-lists, scrape intervals, and cluster-side configuration. The two keep-list entries extend minimal collection; this fragment does not enable scheduler collection. With an existing schema v1 file, follow the documented migration rather than mixing schema versions.</p>
+<pre><code class="language-yaml">data:
+  schema-version: v2
+  controlplane-metrics: |-
+    default-targets-scrape-enabled: |-
+      apiserver = true
+      etcd = true
+    default-targets-metrics-keep-list: |-
+      apiserver = "apiserver_flowcontrol_current_executing_seats|apiserver_flowcontrol_rejected_requests_total"
+    minimal-ingestion-profile: |-
+      enabled = true</code></pre>
+<p>In v2, use <code>default-targets-scrape-enabled</code>, target names without the old <code>controlplane-</code> prefix inside the control-plane section, and nested <code>minimal-ingestion-profile</code> configuration. Enabling <code>kube-scheduler</code> and retaining its required metrics is a separate reviewed change if scheduling analysis is needed. A keep-list entry establishes intent, not proof that the target exposes or forwards that metric.</p>
+<p>Applying a complete reviewed ConfigMap is a Kubernetes write that changes collection behavior. The next command shows that effect explicitly; do not apply the fragment above as the complete file. Read back the merged settings, then confirm actual series at the workspace. Disabling all managed Prometheus collection is not a narrowly scoped rollback for a control-plane-only change.</p>
+<pre><code class="language-powershell">$ReviewedConfigPath = "REPLACE_WITH_REVIEWED_COMPLETE_CONFIGMAP.yaml"
+kubectl apply --filename $ReviewedConfigPath</code></pre>
+
+<h2 id="queries">7. Query the right type, scope, and time window</h2>
+<p>All PromQL below is read-only and illustrative. Replace <code>REPLACE_SCOPE_LABEL</code> and <code>REPLACE_SCOPE_VALUE</code> with a verified label/value selecting exactly one cluster; replace <code>REPLACE_TARGET_LABEL</code> and <code>REPLACE_TARGET_VALUE</code> with the relevant control-plane target label/value. Discover these in the workspace series browser—do not assume a label name, cluster alias, or target value. Use the API-server target for the first group, the scheduler target for scheduling, and etcd for database size. Preserve this scope on every numerator and denominator. Verify replica identity and duplicate ingestion before aggregation.</p>
+<h3>Series count is a collection check; a gauge is occupancy</h3>
+<pre><code class="language-promql">count(apiserver_request_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"})
+count(apiserver_flowcontrol_current_executing_seats{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"})
+
+sum(apiserver_flowcontrol_current_executing_seats{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"})</code></pre>
+<p>The first two expressions count returned label combinations, not requests or occupied seats. The third sums instantaneous gauge values across selected series at each evaluation time. A range graph repeats that calculation over time; it does not add every timestamp together. Do not apply <code>rate()</code> or <code>increase()</code> to this occupancy gauge. Retain per-priority-level views for diagnosis instead of relying only on the global sum.</p>
+<h3>Counter change and rate answer different questions</h3>
+<pre><code class="language-promql">sum by (code) (
+  increase(apiserver_request_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}[5m])
+)
+
+sum by (code) (
+  rate(apiserver_request_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}[5m])
+)
+
+100 *
+sum(rate(apiserver_request_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE",code=~"429|5.."}[5m]))
+/
+sum(rate(apiserver_request_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}[5m]))
+
+sum(
+  increase(apiserver_flowcontrol_rejected_requests_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}[5m])
+)</code></pre>
+<p>Apply the range function to each counter before summing so resets can be handled per series. <code>increase()</code> estimates the change over the window and can return fractional values because of extrapolation; <code>rate()</code> gives the average per-second rate. Five minutes is an example analysis window, not a collection interval or a universal alert rule. Choose a window with enough samples and retain the raw series when investigating gaps or restarts.</p>
+<p>The percentage combines selected HTTP 429 and 5xx responses over all selected API requests. It is not a capacity score or an application error rate. No matching error series can yield no result; zero traffic can make the denominator zero. Do not mask missing telemetry with an unconditional zero fallback. APF rejections help diagnose flow control, but adding them to HTTP errors can double-count the same requests. Inspect available priority-level and reason labels separately.</p>
+<h3>Scheduler attempts and per-partition database size</h3>
+<pre><code class="language-promql">sum by (result) (
+  rate(scheduler_schedule_attempts_total{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}[5m])
+)
+
+max by (REPLACE_PARTITION_LABEL) (
+  etcd_mvcc_db_total_size_in_bytes{REPLACE_SCOPE_LABEL="REPLACE_SCOPE_VALUE",REPLACE_TARGET_LABEL="REPLACE_TARGET_VALUE"}
+) / (1024 * 1024 * 1024)</code></pre>
+<p>Verify the scheduler's actual <code>result</code> label and values before interpreting its outcome groups; unsuccessful attempts are not unique failed Pods. The Hyperscale page also lists suffixed scheduler names, but the default collection reference lists the canonical counter used here. Discover the exposed series instead of assuming every documented variant exists. Neither expression measures Pod Ready latency.</p>
+<p>Replace <code>REPLACE_PARTITION_LABEL</code> only after identifying the actual resource-partition dimension. The etcd expression returns the largest replica database size per partition in GiB, not a summed database size or percent full. It is a gauge, so no counter rate is applied. If the required partition labels or metric are missing, use the documented platform database-utilization metric with its resource-type dimension or fix collection; do not silently collapse all partitions into one apparent allowance.</p>
+
+<h2 id="observations">8. What the October 1 observation actually establishes</h2>
+<p>The historical source describes one low-load cluster and a small illustrative scenario of ten Deployments with three Pods each. It confirms schema v2 managed Prometheus configuration and returned API-request and executing-seat series. It does not establish maximum cluster capacity or a matched H2-versus-H4 performance comparison. The API-counter capture and seat capture were taken at different times and must not be correlated as one synchronized load sample.</p>
+<table>
+  <thead><tr><th>Collection or gauge observation</th><th>Value</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>API request series returned</td><td>894</td><td>Label combinations, not total requests</td></tr>
+    <tr><td>Executing-seat series returned</td><td>18</td><td>Label combinations, not seat occupancy</td></tr>
+    <tr><td>Seat graph, approximate earlier value</td><td>3</td><td>Sum at a graph evaluation time</td></tr>
+    <tr><td>Seat graph, observed upper value</td><td>6</td><td>Sampled occupancy, not a sustained maximum capacity</td></tr>
+    <tr><td>Seat graph legend mean</td><td>4.45</td><td>Displayed series summary, not current occupancy</td></tr>
+    <tr><td>Seat Grid value</td><td>6</td><td>Sum at the Grid evaluation time</td></tr>
+  </tbody>
+</table>
+<p>The Grid evaluation time was 16:37:34.673 KST on October 1. It is a query evaluation timestamp, not evidence that every underlying replica was scraped at exactly that instant. The graph showed an approximate change from 3 to 6; sampling can miss short-lived peaks. The legend mean of 4.45 is not a guaranteed time-weighted mean, and dividing any of these values by 1,750 would not establish an official H2 utilization percentage without aligned metric scope and capacity semantics.</p>
+<p>A separate API query around 16:23 KST summed the raw request counter by response code. These are the historical displayed cumulative sums, not five-minute increases and not a complete lifetime accounting across replaced instances.</p>
+<table>
+  <thead><tr><th>HTTP response code</th><th>Displayed cumulative counter sum</th></tr></thead>
+  <tbody>
+    <tr><td>200</td><td>22,954</td></tr>
+    <tr><td>201</td><td>3,494</td></tr>
+    <tr><td>304</td><td>32</td></tr>
+    <tr><td>403</td><td>211</td></tr>
+    <tr><td>404</td><td>1,018</td></tr>
+    <tr><td>409</td><td>321</td></tr>
+    <tr><td>429</td><td>53</td></tr>
+    <tr><td>500</td><td>36</td></tr>
+    <tr><td>503</td><td>8</td></tr>
+  </tbody>
+</table>
+<p>In particular, 53 cumulative HTTP 429 responses do not mean 53 rejections in the most recent thirty minutes, do not establish overload during this scenario, and do not prove that H2 was too small. A 403 points to authorization investigation; a 409 may involve an object-update conflict. A 429 can reflect a constrained APF priority level, and a 503 can involve API-server readiness or an aggregated API backend. Correlate recent-window changes with latency, APF signals, and appropriately protected logs before attributing a cause.</p>
+<p>The retained evidence supports a collection-path check and metric-reading lesson. It does not demonstrate sustained saturation, a scheduling-rate measurement, per-partition storage pressure, resize duration, zero disruption, an H4 improvement, or application startup performance. No original screenshots or raw environment output are republished.</p>
+
+<h2 id="decisions">9. Turn observations into an operational decision</h2>
+<table>
+  <thead><tr><th>Signal</th><th>First investigation</th><th>Potential next step</th></tr></thead>
+  <tbody>
+    <tr><td>Sustained API delay with high seats and recent APF rejection growth</td><td>Check per-priority-level demand, request mix, list/watch behavior, retries, and webhooks</td><td>Reduce avoidable API work; evaluate another size only with representative evidence</td></tr>
+    <tr><td>Unschedulable attempts with available API capacity</td><td>Inspect node resources, taints, affinity, volume topology, and Pod requests</td><td>Fix placement or worker capacity rather than assuming a larger control plane solves it</td></tr>
+    <tr><td>Scheduled Pods remain unready</td><td>Inspect images, volumes, initialization, networking, and probes</td><td>Measure the worker/application path separately</td></tr>
+    <tr><td>One etcd partition grows while others are small</td><td>Review resource counts, object size, retention, and replica aggregation</td><td>Plan safe lifecycle changes; H4/H8 do not add published storage per partition</td></tr>
+    <tr><td>Empty graphs after a configuration change</td><td>Verify workspace access, target enablement, schema, keep-list, labels, and elapsed collection time</td><td>Repair observability before interpreting absence as healthy zero load</td></tr>
+  </tbody>
+</table>
+<p>A useful evaluation plan keeps the same workload shape, operation mix, client concurrency, object population, and observation duration across candidate sizes. Record the size actually reported by the resource, scrape interval, query scope, missing data, client completion times, request latency, error changes, and worker capacity. This is a proposed future method, not a test performed here. Do not claim a benchmark from the ten-Deployment demonstration.</p>
+<ul>
+  <li>Confirm dated Preview eligibility, terms, regional quota, and supported tooling before approving a change.</li>
+  <li>Distinguish an ordinary-cluster migration from an existing Hyperscale size update; retain a data-safe rollback plan.</li>
+  <li>Verify telemetry coverage and counter/gauge semantics before setting alerts or comparing sizes.</li>
+  <li>Keep API concurrency, scheduling attempts, Pod Ready latency, and partition growth on separate panels.</li>
+  <li>Use sustained, correlated signals instead of one cumulative error total or one low-load screenshot.</li>
+  <li>Review current pricing and all telemetry, worker, network, and storage costs separately; this article supplies no price or SLA conclusion.</li>
+</ul>
+
+<h2 id="official-references">10. Public references and dated interpretation</h2>
+<p>These public references were checked on October 7, 2026. They support the feature constraints and metric semantics above, not a claim that any reader's subscription is eligible or that any command was successfully executed. The historical notebook supplies the observations; the public product documentation governs the supported lifecycle description.</p>
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/aks/hyperscale-configuration-aks">Microsoft Learn: Hyperscale configuration for AKS using a control-plane scaling profile</a> — sizing, Preview terms, Standard/Premium requirement, prerequisites, new-cluster limitation, resizing, partitions, and monitoring guidance.</li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/aks/control-plane-metrics-monitor">Microsoft Learn: Monitor AKS control-plane metrics</a> — managed collection, identity and Private Link limitations, schema v2, keep-lists, and workspace access.</li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/containers/prometheus-metrics-scrape-default">Microsoft Learn: Default Prometheus metrics configuration</a> — minimal ingestion, target defaults, and canonical metric names. Legacy prefixed section headings do not replace v2 configuration keys.</li>
+  <li><a href="https://github.com/Azure/prometheus-collector/blob/main/otelcollector/configmaps/ama-metrics-settings-configmap.yaml">Azure Prometheus collector: public settings ConfigMap</a> — the maintained schema reference; review changes before merging, rather than blindly applying all defaults.</li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/aks/quotas-skus-regions">Microsoft Learn: AKS resource, SKU, and region limits</a> — general quotas, distinct from the feature-specific one-cluster Preview limit.</li>
+  <li><a href="https://kubernetes.io/docs/concepts/cluster-administration/flow-control/">Kubernetes: API Priority and Fairness</a> — seat occupancy, request width, priority levels, and queuing.</li>
+  <li><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/">Kubernetes: Scheduler</a> — node feasibility, scoring, and binding, rather than application readiness.</li>
+</ul>
+<p>Two source-level ambiguities are resolved explicitly: Hyperscale-to-Hyperscale resizing is supported, and scheduling capacity does not double at every size step. Two documentation caveats remain visible: GB versus GiB wording for etcd, and scheduler metric-name variants that require discovery. None is a reason to infer undocumented guarantees.</p>
+<h2 id="resources">Resources</h2><p>No standalone companion files are distributed for this topic. Use the in-page examples and review the editorial notes below for source availability.</p><h2 id="editorial-notes">Editorial notes</h2><p>This page consolidates the following source documents into a technical guide:</p><ul><li>AKS Hyperscale Control Plane Concepts and Lab Guide, reviewed October 1, 2026</li><li>October 1 Managed Prometheus Collection and Low-Load API Observations</li><li>Public Microsoft Learn and Kubernetes Documentation, checked October 7, 2026</li></ul><ul><li>Private repository links, original screenshots, raw outputs, account and resource identifiers, workspace names, hostnames, addresses, credentials, and personal paths are not published.</li><li>The source scenario of ten Deployments with three Pods each is retained only as evidence scope; no workload generator, deployment manifest, or destructive cleanup command is supplied.</li><li>No H2/H4 benchmark, saturation test, throughput improvement, application readiness timing, price, availability measurement, or SLA is inferred from the observations.</li><li>All commands and PromQL are illustrative and parameterized. No cloud commands, provisioning, resizing, collection changes, or runtime load tests were executed for this article.</li><li>Upstream prose conflicts about resizing and doubling are resolved against current public documentation; its GB/GiB inconsistency is disclosed rather than silently converted. No standalone download is needed for the inline query examples.</li></ul><p>No original credentials or private repository links are included. Do not put populated configuration files or copied production outputs back into this public site.</p></div>
+</article></main>
+<footer><span>Azure Tech Field Notes</span><span>Independent technical notes. Not an official Microsoft publication.</span><span>English edition &middot; October 2026</span></footer>
+<div class="sr-only" id="status" role="status" aria-live="polite"></div>
+</body></html>

@@ -1,0 +1,131 @@
+<blockquote>
+<p><strong>Independent technical notes, reviewed October 7, 2026.</strong> This is not official migration guidance, pricing advice, or an SLA. Resource eligibility, permissions, DNS topology, regional availability, and portal behavior vary. A successful lab migration is not a guarantee for another environment. No Azure requests or resource changes were made while preparing this article.</p>
+<p><strong>The useful distinction:</strong> keeping an application's endpoint and authentication unchanged does not mean keeping its private network path unchanged—or avoiding an outage. The observed upgrade retained the client contract while replacing the private endpoint and its DNS registrations.</p>
+</blockquote>
+
+<h2 id="scope-evidence">1. What the evidence establishes</h2>
+<p>The reviewed lab changed the kind of the same Cognitive Services account from <code>OpenAI</code> to <code>AIServices</code> and enabled <code>allowProjectManagement</code>. The existing OpenAI API endpoint, deployment, VM system-assigned managed identity, and client file fingerprint were unchanged. The test used a GPT-5 model deployment and <code>POST /openai/v1/chat/completions</code>, not a new Foundry API.</p>
+<table>
+<thead><tr><th>Check</th><th>Before</th><th>After</th></tr></thead>
+<tbody>
+<tr><td>Account kind</td><td><code>OpenAI</code></td><td><code>AIServices</code></td></tr>
+<tr><td>Recorded successful inference calls</td><td>1</td><td>1</td></tr>
+<tr><td>HTTP status</td><td>200</td><td>200</td></tr>
+<tr><td>Client file, OpenAI endpoint, deployment and VM identity</td><td>Baseline recorded</td><td>Unchanged</td></tr>
+<tr><td>DNS answer and actual HTTPS peer</td><td>Old private endpoint address</td><td>New, different private endpoint address</td></tr>
+<tr><td>Completed nonempty text response</td><td>Observed</td><td>Observed</td></tr>
+<tr><td>Public access / local key authentication</td><td>Disabled / disabled</td><td>Disabled / disabled</td></tr>
+</tbody>
+</table>
+<p>The new OpenAI DNS A record had an observed TTL of <strong>10 seconds</strong>. That value describes one record, not an end-to-end DNS convergence deadline. The source reports successful responses on both sides of the change; it supplies neither a continuous request timeline nor a measured outage duration. API-key preservation is documented by Microsoft, but was not tested here because key authentication remained disabled. No rollback or new Foundry capability was exercised.</p>
+
+<h2 id="before-after-path">2. Before and after: the hostname stays, the route changes</h2>
+<p>Before: the VM obtains a token from Azure Instance Metadata Service (IMDS), resolves the existing OpenAI hostname through private DNS, and sends HTTPS through the old private endpoint to the OpenAI account. After: the same VM, identity, hostname, deployment and API route use a newly created private endpoint attached to the upgraded account. DNS supplies the replacement private address.</p>
+<p>The account's own system-assigned identity is an upgrade prerequisite. It is <strong>not</strong> the VM identity that authenticates the inference request. Keep these two identities and their permissions separate. The observed VM retained its existing <code>Cognitive Services OpenAI User</code> assignment at the account scope.</p>
+<p>A subtle control-plane difference matters: the source reports that the representative <code>properties.endpoint</code> changed to the Cognitive Services hostname, while the OpenAI address in <code>properties.endpoints</code> remained available. Do not automatically replace a working OpenAI client URL with the singular endpoint property after upgrade. Compare the endpoint appropriate to the API your application actually calls.</p>
+<p>The private endpoint belongs in the VNet's region; the target account need not share that region. This is inbound model access only. Preparing additional DNS names does not establish private connectivity for every Agent Service dependency, outbound integration, or new Foundry feature.</p>
+
+<h2 id="prepare-change">3. Prerequisites and a recovery plan before mutation</h2>
+<ul>
+<li>Confirm eligibility in the current upgrade documentation: feature availability varies by region, customer-managed-key upgrades require a request, and other product limitations can apply. Check account limits, policy, locks and organizational approval before scheduling work.</li>
+<li>The upgrade guide specifies Owner on the subscription or resource group and an enabled system-assigned identity on the account. Coordinate the separate permissions to create/approve private endpoints and manage DNS zones and VNet links. Do not assume a data-plane OpenAI role authorizes network changes.</li>
+<li>Privately inventory the existing account, deployment configuration, identity assignments, network restrictions, private endpoint connections, NIC ownership, zone groups, DNS records, VNet links and custom DNS forwarding. Keep configuration evidence outside public repositories and shared logs.</li>
+<li>Run a baseline from the real client network, retain the client checksum, and freeze the endpoint, deployment and authentication settings for comparison. Keep a secure administrative path that does not depend on the model endpoint.</li>
+<li>Book an interruption window, identify the change owner and DNS owner, and define stop conditions and a recovery decision deadline. Delay creating Foundry-only state until baseline compatibility has passed.</li>
+</ul>
+<p><strong>Reversible planning is not verified rollback.</strong> Microsoft documents rollback after removing projects, connections and non-OpenAI model deployments. Those removals can destroy newly created state. Preserve approved backups and rehearse an environment-specific recovery procedure; neither a saved configuration nor reversing the kind field proves that service will recover.</p>
+<p><strong>Documentation caveat:</strong> the reviewed rollback Bicep example explicitly sets <code>publicNetworkAccess: 'Enabled'</code>. That conflicts with this article's private-only security objective. Do not copy it into a private-only environment or assume that keeping access disabled is a tested substitute. Resolve a supported, policy-compliant rollback plan before the upgrade; this lab did not establish one.</p>
+
+<h2 id="safe-sequence">4. An explicit, gated change sequence</h2>
+<p>Use an authenticated administration workstation for management operations, not necessarily the inference VM. The following Bash reads do not modify Azure resources. Supply your own values privately; their query output is deliberately limited but still belongs in a controlled working session.</p>
+<pre><code class="language-bash">read -r -p "Subscription: " SUBSCRIPTION
+read -r -p "Resource group: " RESOURCE_GROUP
+read -r -p "Existing account: " ACCOUNT
+az cognitiveservices account update --help
+az cognitiveservices account show \
+  --subscription "$SUBSCRIPTION" -g "$RESOURCE_GROUP" -n "$ACCOUNT" \
+  --query '{kind:kind,state:properties.provisioningState,projectManagement:properties.allowProjectManagement,publicAccess:properties.publicNetworkAccess,keyAuthDisabled:properties.disableLocalAuth}' \
+  -o json</code></pre>
+<ol>
+<li><strong>Pass the baseline gate.</strong> Confirm inference succeeds privately and record the properties and client checksum. Enable the account's own identity if needed through an approved change; do not replace the VM identity.</li>
+<li><strong>Remove the old private connection/path under change control.</strong> The recorded CLI workflow first removed the service-side connection, leaving a disconnected private endpoint and its NIC. This is not the same as deleting the private endpoint resource. The public guide instructs portal users to delete private endpoints before upgrading, or use its infrastructure-as-code alternatives. Follow the documented path applicable to your method, not an assumption that a disconnected endpoint is universally sufficient.</li>
+<li><strong>Upgrade the existing account, not a replacement account.</strong> Proceed only when the prerequisites and removal state have been checked. Verify the operation completes and the account remains the intended resource.</li>
+<li><strong>Check the post-upgrade gate.</strong> Confirm the new kind, project-management flag, retained deployment and OpenAI endpoint, effective VM role, and unchanged public-access and local-auth restrictions. Stop if these differ unexpectedly.</li>
+<li><strong>Finish old endpoint cleanup before new DNS ownership.</strong> If the old disconnected private endpoint remains, remove it and verify its managed NIC and DNS zone group are cleaned up before creating the replacement. The next section explains the ownership boundary.</li>
+<li><strong>Recreate and validate.</strong> Create a distinctly named private endpoint targeting the upgraded account's <code>account</code> subresource, in the VNet's region and designated subnet. Require connection approval and successful provisioning, restore DNS integration, then rerun the unchanged baseline client.</li>
+</ol>
+<p><strong>Resource-changing example—do not run as a discovery check.</strong> This source-derived command updates the existing account. It is not executed by this site, does not implement prerequisites or recovery, and can interrupt service when combined with endpoint removal. Check that the installed CLI exposes both options and obtain change approval first.</p>
+<pre><code class="language-bash">az cognitiveservices account update \
+  --subscription "$SUBSCRIPTION" \
+  --resource-group "$RESOURCE_GROUP" --name "$ACCOUNT" \
+  --kind AIServices --allow-project-management true \
+  --output none</code></pre>
+<p>No step here requires temporarily enabling public network access or key authentication. The source kept <code>publicNetworkAccess</code> disabled and <code>disableLocalAuth</code> true. Removing a private endpoint does not itself enable public access; with public access disabled it can instead leave no usable client path.</p>
+
+<h2 id="dns-ownership">5. DNS ownership, endpoint recreation and safe cleanup</h2>
+<table>
+<thead><tr><th>Object</th><th>Responsibility during replacement</th></tr></thead>
+<tbody>
+<tr><td>Service-side private endpoint connection</td><td>Approval and association with the account; removing it can leave the separate endpoint resource disconnected.</td></tr>
+<tr><td>Private endpoint and managed NIC</td><td>Supply private addresses. Delete the old endpoint first; check automatic NIC cleanup. Never start by force-deleting an attached NIC.</td></tr>
+<tr><td>Private DNS zone group</td><td>Associates the endpoint with zones and manages endpoint-related records. It is not the DNS zone itself.</td></tr>
+<tr><td>Private DNS zone and VNet link</td><td>Keep reusable zones and required links. Verify the client's resolver can see them; existence alone does not establish resolution.</td></tr>
+</tbody>
+</table>
+<p>Old and new endpoint zone groups must not compete for the same service records in a shared zone. In this workflow, complete old endpoint/zone-group cleanup before the replacement registers its records; deleting the old owner afterward can remove records that the new path needs. If a NIC remains, establish that endpoint deletion completed and that the NIC is truly unattached before considering its separate removal. Do not delete the VM NIC, VNet, subnet, NSG, account, deployment, or entire resource group.</p>
+<table>
+<thead><tr><th>Public endpoint suffix</th><th>Private DNS zone</th><th>Validation scope</th></tr></thead>
+<tbody>
+<tr><td><code>openai.azure.com</code></td><td><code>privatelink.openai.azure.com</code></td><td>Existing client compatibility; reuse the existing zone where appropriate.</td></tr>
+<tr><td><code>services.ai.azure.com</code></td><td><code>privatelink.services.ai.azure.com</code></td><td>Additional Foundry endpoint readiness, not functional feature validation.</td></tr>
+<tr><td><code>cognitiveservices.azure.com</code></td><td><code>privatelink.cognitiveservices.azure.com</code></td><td>Additional account endpoint readiness, not functional feature validation.</td></tr>
+</tbody>
+</table>
+<p>The upgrade documentation explicitly requires endpoint recreation to obtain the additional endpoint IP configurations. With DNS integration enabled, select the correct existing zones or create missing ones; an existing zone is not a reason to turn integration off. Inspect the resulting zone group, each endpoint IP configuration and its corresponding A records rather than assuming every name maps to one address. Link the required zones to the client VNet with VM auto-registration disabled. If the wizard already created the links or records, do not duplicate them.</p>
+<p>For custom or on-premises DNS, the DNS owner must provide the appropriate forwarding/resolution path into Azure private DNS. Validate from the actual client, including intermediate caches. Do not use a hosts-file override or hardcoded service IP to hide a DNS problem. The historical record observed the old A record disappear and a new address appear after integration; deletion timing and cache behavior are not universal.</p>
+
+<h2 id="validation-client">6. Validation: prove more than a successful status code</h2>
+<p>The original client used Python's standard library and curl, with no SDK login or API key. It checked IPv4 DNS answers against the expected private endpoint subnet, acquired a fresh VM identity token from IMDS for the Cognitive Services audience, bypassed proxies for the token and model call, and inspected curl's actual remote address. It required HTTP 200, a nonempty text response, and <code>finish_reason == "stop"</code>. A new token value is normal and is not evidence that the identity changed.</p>
+<p>Its request used <code>reasoning_effort="minimal"</code> and <code>max_completion_tokens=256</code>; connection and overall curl timeouts were 20 and 180 seconds. These are client settings, not measured latency or universal model defaults. It did not require an exact response phrase. The original diagnostic printed response and usage content, which is unsuitable for public logs.</p>
+<p>The <a href="../downloads/openai-foundry-migration/verify_private_inference.py">sanitized companion client</a> preserves the core checks but takes configuration as arguments, retains responses only in memory, suppresses identifiers and raw errors, and pins curl to one prechecked IPv4 address while retaining hostname-based TLS verification. It is <strong>not byte-identical to the source, and was not cloud-tested</strong>. Address pinning narrows the diagnostic to that chosen address, not the application's complete DNS/failover behavior. It sends no network traffic with <code>--help</code>; <code>--run-inference</code> explicitly opts into token acquisition and one inference request.</p>
+<p>Use Python 3.9 or later and curl on an authorized Azure VM with a system-assigned identity and effective OpenAI inference permission. The sample targets the public Azure OpenAI hostname format and the source model's request options; it is not a sovereign-cloud, user-assigned-identity or arbitrary-model compatibility tool. The well-known IMDS address in the file is a protocol endpoint, not a lab address. Inference does not change infrastructure, but consumes quota and may incur cost.</p>
+<pre><code class="language-bash">python3 verify_private_inference.py --help
+sha256sum verify_private_inference.py
+
+read -r -p "Existing OpenAI HTTPS endpoint: " OPENAI_ENDPOINT
+read -r -p "Existing deployment: " OPENAI_DEPLOYMENT
+read -r -p "Expected private endpoint IPv4 subnet: " PE_SUBNET
+python3 verify_private_inference.py \
+  --endpoint "$OPENAI_ENDPOINT" --deployment "$OPENAI_DEPLOYMENT" \
+  --pe-subnet "$PE_SUBNET" --run-inference</code></pre>
+<p>Run the same reviewed file and arguments before and after your change; compare the locally recorded checksum without publishing it alongside environment details. A PASS establishes a completed inference over the checked private address for that run. Subnet membership alone does not identify the correct endpoint: privately compare the selected address with the actual endpoint NIC/IP configuration. The sanitized output intentionally does not print addresses, so it does not by itself prove that an address changed.</p>
+<p>Complete the evidence with private control-plane comparisons of account identity, deployment, endpoint selection, effective role assignments and access restrictions. Do not log tokens, response text, raw HTTP bodies or verbose curl traces. For a production acceptance plan, add approved repeated checks, real client connection-pool/DNS behavior and monitoring over the change window; the two historical successes do not substitute for those tests.</p>
+
+<h2 id="troubleshooting">7. Troubleshoot by layer, without weakening the boundary</h2>
+<table>
+<thead><tr><th>Symptom</th><th>Investigate first</th></tr></thead>
+<tbody>
+<tr><td>Upgrade is blocked</td><td>Account identity, operation permissions, policy/locks, eligibility, resource limits and remaining private connections. Compare the method with the current guide; do not delete unrelated resources to make it proceed.</td></tr>
+<tr><td>Old or public DNS answer</td><td>Zone group records, VNet links, forwarding and caches from the client network. Confirm authoritative data before flushing a local cache; flushing one VM cannot fix upstream DNS.</td></tr>
+<tr><td>Private DNS is correct but HTTPS fails</td><td>Endpoint approval/provisioning, NIC IP configuration, routing, NSG/firewall behavior and proxy settings. DNS success does not prove TCP or TLS reachability.</td></tr>
+<tr><td>HTTP 401</td><td>Token acquisition, Cognitive Services audience, expiration and the intended VM identity. Avoid exposing token contents while diagnosing.</td></tr>
+<tr><td>HTTP 403</td><td>Both network restrictions and effective data-plane RBAC at the correct scope. Allow for role propagation without treating a fixed wait as a guarantee.</td></tr>
+<tr><td>HTTP 404 or request rejection</td><td>Existing OpenAI API route, deployment name and model-supported request fields. Do not substitute the representative account endpoint blindly.</td></tr>
+<tr><td>HTTP 429, 5xx, or incomplete text</td><td>Quota, throttling, transient service errors, output limits and finish reason. A failed diagnostic is not automatically a migration defect; investigate before any bounded retry.</td></tr>
+</tbody>
+</table>
+<p>The companion deliberately emits generic failures instead of raw server errors. Use approved private diagnostics when more detail is necessary. It does not retry inference automatically, and its success output does not attest to service availability, content quality, identity configuration or every endpoint in the account.</p>
+
+<h2 id="acceptance-limits">8. Close the change, and state what remains unproven</h2>
+<p>Accept the change only after both control-plane checks and real-client inference pass, the new DNS ownership is clear, and obsolete disconnected resources have been accounted for. Retain the approved pre/post comparison and recovery decision record privately. Review broad RBAC and policies: the official guide warns that permissions not restricted to OpenAI can expose additional Foundry capabilities after upgrade.</p>
+<p>The supported conclusion is narrow: this environment's existing managed-identity OpenAI client worked after an in-place account upgrade and private-path reconstruction, with a different actual private peer. It is not evidence of zero downtime, unchanged API keys, performance equivalence, a successful rollback, or working agents, evaluations and non-OpenAI models. Those features require separate authorization, network and application acceptance tests.</p>
+<p>After testing, manage lab costs through approved, individually scoped actions. Deallocating a test VM does not eliminate disk, private endpoint, DNS or other resource charges. Never delete a resource group merely to clean up a VM when it contains the retained account or deployment. No price estimate or cost-saving guarantee is implied.</p>
+
+<h2 id="official-references">9. Official references and how they qualify the procedure</h2>
+<ul>
+<li><a href="https://learn.microsoft.com/en-us/azure/foundry/how-to/upgrade-azure-openai?tabs=portal">Upgrade Azure OpenAI to Microsoft Foundry</a>: prerequisites, eligibility, preserved configurations, governance changes and rollback requirements. Its portal endpoint-deletion requirement is broader than the service-connection removal first recorded in this CLI lab.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/foundry/how-to/upgrade-azure-openai#private-network-configuration">Upgrade: private network configuration</a>: three endpoint families and recreation for the additional IP configurations. Endpoint continuity must not be read as preservation of an already connected private path.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/foundry/how-to/configure-private-link">Configure network isolation for Microsoft Foundry</a>: private endpoint permissions, VNet-region placement, DNS and validation. Inbound connectivity is distinct from full outbound Agent Service isolation.</li>
+<li><a href="https://learn.microsoft.com/en-us/cli/azure/cognitiveservices/account?view=azure-cli-latest#az-cognitiveservices-account-update">Azure CLI account update reference</a>: the reviewed reference exposes <code>--kind</code> with <code>AIServices</code>/<code>OpenAI</code> and <code>--allow-project-management</code>. Confirm installed CLI support rather than inferring it from a successful historical command.</li>
+</ul>
+<p>These public references were checked for this review. They describe product behavior and current requirements; the recorded lab describes one execution. Where wording is broader than the measured evidence—especially endpoint continuity, rollback and network preservation—use the documented constraints and your environment's change controls, not an inferred guarantee.</p>

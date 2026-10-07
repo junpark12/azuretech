@@ -2,7 +2,7 @@ param([switch]$AllowPartial)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $output = Join-Path $root 'docs'
-$expected = @('acr-streaming', 'ai-gateway', 'ai-gateway-existing', 'cilium-network-policy', 'codex', 'envoy-gateway', 'istio-gateway-api', 'translation-performance', 'ase-frontend-scaling', 'managed-instance', 'self-hosted-aca', 'content-safety-streaming', 'aks-confidential-vm')
+$expected = @('acr-streaming', 'ai-gateway', 'ai-gateway-existing', 'cilium-network-policy', 'codex', 'envoy-gateway', 'istio-gateway-api', 'translation-performance', 'ase-frontend-scaling', 'managed-instance', 'self-hosted-aca', 'content-safety-streaming', 'aks-confidential-vm', 'openai-foundry-migration', 'hosted-agent-latency', 'aks-hyperscale')
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 function Encode([string]$value) { [System.Net.WebUtility]::HtmlEncode($value) }
 . (Join-Path $root 'visuals.ps1')
@@ -15,6 +15,10 @@ function Write-Utf8([string]$path, [string]$value) {
 $topics = @(Get-ChildItem (Join-Path $root 'content') -Filter '*.json' | ForEach-Object {
     $topic = Get-Content $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($topic.slug -notin $expected) { throw "Unexpected topic: $($topic.slug)" }
+    if ($topic.publishedOn) {
+        $date = [datetime]::MinValue
+        if (-not [datetime]::TryParseExact($topic.publishedOn, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$date)) { throw "Invalid publication date: $($topic.slug)" }
+    }
     if ($topic.bodyFile) {
         $bodyPath = Resolve-Within (Join-Path $root 'content') $topic.bodyFile
         $topic | Add-Member -NotePropertyName bodyHtml -NotePropertyValue (Get-Content $bodyPath -Raw -Encoding UTF8) -Force
@@ -26,7 +30,7 @@ $topics = @(Get-ChildItem (Join-Path $root 'content') -Filter '*.json' | ForEach
         throw "Active or unreviewed embedded content in $($topic.slug)"
     }
     $topic
-} | Sort-Object category, title)
+} | Sort-Object @{Expression='publishedOn';Descending=$true}, category, title)
 if (@($topics.slug | Select-Object -Unique).Count -ne $topics.Count) { throw 'Duplicate topic slug.' }
 if (-not $AllowPartial -and $topics.Count -ne $expected.Count) {
     throw "Expected $($expected.Count) topics; found $($topics.Count). Missing: $($expected | Where-Object { $_ -notin $topics.slug })"
@@ -119,10 +123,11 @@ foreach ($locale in @('en','ko')) {
         $resourceText=if (@($topic.downloads).Count) { (Ui $locale 'resourceCount') -f @($topic.downloads).Count } else { Ui $locale 'inlineExamples' }
         $enTopic=$topics | Where-Object {$_.slug -eq $topic.slug}
         $searchText="$($topic.title) $($topic.summary) $($topic.category) $($enTopic.title) $($koreanTopics[$topic.slug].title)"
+        $cardDate=if($topic.publishedOn){' &middot; <time datetime="' + (Encode $topic.publishedOn) + '">' + (Encode $topic.publishedOn) + '</time>'}else{''}
         @"
 <article class="topic-card" data-category="$(Encode $topic.category)" data-search="$(Encode $searchText)">
 $(Topic-Diagram $topic.slug -Thumbnail -Locale $locale)
-<span class="eyebrow">$(Encode $topic.category)</span><h2><a href="topics/$slug.html">$(Encode $topic.title)</a></h2><p>$(Encode $topic.summary)</p><div class="card-bottom"><span>$(Encode $resourceText)</span><a href="topics/$slug.html" aria-label="$(Encode ((Ui $locale 'read') + ': ' + $topic.title))">$(Encode (Ui $locale 'read')) <span aria-hidden="true">&#8599;</span></a></div>
+<span class="eyebrow">$(Encode $topic.category)$cardDate</span><h2><a href="topics/$slug.html">$(Encode $topic.title)</a></h2><p>$(Encode $topic.summary)</p><div class="card-bottom"><span>$(Encode $resourceText)</span><a href="topics/$slug.html" aria-label="$(Encode ((Ui $locale 'read') + ': ' + $topic.title))">$(Encode (Ui $locale 'read')) <span aria-hidden="true">&#8599;</span></a></div>
 </article>
 "@
     }
@@ -151,10 +156,11 @@ $(Topic-Diagram $topic.slug -Thumbnail -Locale $locale)
         $body=if($locale -eq 'ko'){Korean-BodyLinks $topic.bodyHtml}else{$topic.bodyHtml}
         $body=Topic-Chart $topic.slug $body $locale
         $body=Add-PortalScreenshots $topic.slug $body $locale $articleAssetPrefix
+        $articleDate=if($topic.publishedOn){'<time datetime="' + (Encode $topic.publishedOn) + '">' + (Encode $topic.publishedOn) + '</time>'}else{Encode (Ui $locale 'archiveEditionDate')}
         $article=@"
 <main id="main" class="topic-layout">
 <aside class="toc"><details open><summary>$(Encode (Ui $locale 'toc'))</summary><ol><li><a href="#visual-overview">$(Encode (Ui $locale 'architecture'))</a></li>$tocItems<li><a href="#resources">$(Encode (Ui $locale 'resources'))</a></li><li><a href="#editorial-notes">$(Encode (Ui $locale 'editorial'))</a></li></ol></details><a class="back-link" href="../index.html">&#8592; $(Encode (Ui $locale 'allTopics'))</a></aside>
-<article class="article"><header class="article-header"><p class="eyebrow">$(Encode $topic.category) / $(Encode (Ui $locale 'fieldNote'))</p><h1>$(Encode $topic.title)</h1><p class="lead">$(Encode $topic.summary)</p><div class="article-meta"><span>$(Encode (Ui $locale 'edition'))</span><span>$(Encode (Ui $locale 'parameterized'))</span><span>$(Encode (Ui $locale 'editionDate'))</span></div><p class="translation-note">$(Encode (Ui $locale 'translationNote'))</p></header>
+<article class="article"><header class="article-header"><p class="eyebrow">$(Encode $topic.category) / $(Encode (Ui $locale 'fieldNote'))</p><h1>$(Encode $topic.title)</h1><p class="lead">$(Encode $topic.summary)</p><div class="article-meta"><span>$(Encode (Ui $locale 'edition'))</span><span>$(Encode (Ui $locale 'parameterized'))</span><span>$articleDate</span></div><p class="translation-note">$(Encode (Ui $locale 'translationNote'))</p></header>
 <aside class="editorial-note"><strong>$(Encode (Ui $locale 'evidenceTitle'))</strong> $(Encode (Ui $locale 'evidenceText'))</aside>
 $(Topic-Diagram $topic.slug -Locale $locale)
 <div class="article-body">$body<h2 id="resources">$(Encode (Ui $locale 'resources'))</h2>$resourceSection<h2 id="editorial-notes">$(Encode (Ui $locale 'editorial'))</h2><p>$(Encode (Ui $locale 'sourceIntro'))</p><ul>$sourceTitles</ul><ul>$omissions</ul><p>$(Encode (Ui $locale 'noSecrets'))</p></div>
@@ -165,11 +171,11 @@ $(Topic-Diagram $topic.slug -Locale $locale)
 }
 Write-Utf8 (Join-Path $output '.nojekyll') ''
 $manifest = @{
-    edition = '2026-09'
+    edition = '2026-10'
     topicCount = $topics.Count
     languages = @('en','ko')
     pageCount = 2 * ($topics.Count + 1)
-    topics = @($topics | ForEach-Object { @{ slug = $_.slug; title = $_.title; titleKo = $koreanTopics[$_.slug].title; category = $_.category; sourceDocumentCount = @($_.sourceDocuments).Count; resourceCount = @($_.downloads).Count; paths = @{ en = "topics/$($_.slug).html"; ko = "ko/topics/$($_.slug).html" } } })
+    topics = @($topics | ForEach-Object { @{ slug = $_.slug; title = $_.title; titleKo = $koreanTopics[$_.slug].title; category = $_.category; publishedOn = $_.publishedOn; sourceDocumentCount = @($_.sourceDocuments).Count; resourceCount = @($_.downloads).Count; paths = @{ en = "topics/$($_.slug).html"; ko = "ko/topics/$($_.slug).html" } } })
     resources = @($resourceManifest | Sort-Object -Unique)
     portalScreenshots = @($portalScreenshots.images | ForEach-Object { @{ id=$_.id; topic=$_.topic; path=$_.path; capturedOn=(Get-PortalCaptureDate $_) } })
 }

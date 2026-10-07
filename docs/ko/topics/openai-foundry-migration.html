@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<title>Azure OpenAI에서 Foundry로: 클라이언트는 유지하고 사설 경로는 재구성하기 | Azure Tech Field Notes</title>
+<meta name="description" content="기존 OpenAI 클라이언트의 동작 유지와 Private Endpoint&#183;DNS 재구성을 구분하는 실용적인 계정 업그레이드 가이드입니다. 관리 ID 검증, 안전한 정리 순서, 관측 근거의 한계를 함께 설명합니다.">
+<link rel="canonical" href="https://junpark12.github.io/azuretech/ko/topics/openai-foundry-migration.html">
+<link rel="alternate" hreflang="en" href="https://junpark12.github.io/azuretech/topics/openai-foundry-migration.html">
+<link rel="alternate" hreflang="ko" href="https://junpark12.github.io/azuretech/ko/topics/openai-foundry-migration.html">
+<link rel="alternate" hreflang="x-default" href="https://junpark12.github.io/azuretech/topics/openai-foundry-migration.html">
+<link rel="stylesheet" href="../../assets/site.css">
+<script src="../../assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+<header class="site-header"><a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">AT</span><span>Azure Tech<span class="brand-subtitle">FIELD NOTES</span></span></a><nav aria-label="사이트 메뉴"><a href="../index.html">전체 주제</a><div class="language-switch" role="group" aria-label="언어"><a class="language-link" href="openai-foundry-migration.html" hreflang="ko" lang="ko" aria-current="page">&#54620;&#44397;&#50612;</a><a class="language-link" href="../../topics/openai-foundry-migration.html" hreflang="en" lang="en">English</a></div><button id="theme-toggle" type="button">테마 전환</button></nav></header>
+<main id="main" class="topic-layout">
+<aside class="toc"><details open><summary>이 페이지의 내용</summary><ol><li><a href="#visual-overview">구조 한눈에 보기</a></li><li><a href="#scope-evidence">1. 관측 근거로 확인할 수 있는 것</a></li><li><a href="#before-after-path">2. 전환 전후: 호스트 이름은 유지되고 경로는 변경됨</a></li><li><a href="#prepare-change">3. 변경 전 사전 조건과 복구 계획</a></li><li><a href="#safe-sequence">4. 단계별 통과 조건을 갖춘 명시적인 변경 순서</a></li><li><a href="#dns-ownership">5. DNS 소유 관계, 엔드포인트 재생성과 안전한 정리</a></li><li><a href="#validation-client">6. 검증: 성공 상태 코드 이상의 근거 확보</a></li><li><a href="#troubleshooting">7. 보안 경계를 완화하지 않고 계층별로 문제 해결하기</a></li><li><a href="#acceptance-limits">8. 변경 완료와 미검증 항목의 명시</a></li><li><a href="#official-references">9. 공식 참고 문서와 절차에 적용되는 조건</a></li><li><a href="#resources">참고 리소스</a></li><li><a href="#editorial-notes">편집 및 출처 안내</a></li></ol></details><a class="back-link" href="../index.html">&#8592; 전체 주제</a></aside>
+<article class="article"><header class="article-header"><p class="eyebrow">AI / 기술 가이드</p><h1>Azure OpenAI에서 Foundry로: 클라이언트는 유지하고 사설 경로는 재구성하기</h1><p class="lead">기존 OpenAI 클라이언트의 동작 유지와 Private Endpoint&#183;DNS 재구성을 구분하는 실용적인 계정 업그레이드 가이드입니다. 관리 ID 검증, 안전한 정리 순서, 관측 근거의 한계를 함께 설명합니다.</p><div class="article-meta"><span>한국어판</span><span>변수화된 예제</span><span><time datetime="2026-10-07">2026-10-07</time></span></div><p class="translation-note">한국어판은 검토&#183;수정된 영문 게시본을 기준으로 번역했습니다. 코드, 다운로드 파일, 구조도 내부 표기와 영문 Azure Portal 캡처는 두 언어에서 동일하게 사용합니다.</p></header>
+<aside class="editorial-note"><strong>환경별 관찰 결과입니다.</strong> 측정값과 미리 보기 기능의 동작은 원본 조사 환경에서 확인한 내용이며, 현재 서비스의 보장 사항이 아닙니다. 구성값은 자신의 환경에 맞게 지정해야 합니다.</aside>
+<figure class="technical-visual"><div class="visual-heading"><span class="eyebrow">구조 한눈에 보기</span><h2 id="visual-overview">클라이언트 연결 규약은 유지하고 사설 경로는 교체합니다</h2></div><div class="visual-canvas" tabindex="0" role="region" aria-label="가로로 스크롤할 수 있는 구조도"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 344" role="img" aria-label="클라이언트 연결 규약은 유지하고 사설 경로는 교체합니다. 동시에 활성화된 두 엔드포인트가 아니라 전후 경로를 비교한 개념도입니다. 계정 전환 전후에 동일한 VM ID, OpenAI 호스트 이름, 배포와 클라이언트를 사용했습니다. 기존 Private Endpoint를 교체했고 Private DNS가 다른 주소를 제공했습니다. 두 번의 성공 호출은 무중단, 롤백 성공이나 새 Foundry 기능의 동작을 입증하지 않습니다."><defs><marker id="arrow-openai-foundry-migration-article" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="diagram-arrow" d="M0 0L8 4L0 8z"/></marker></defs><path class="diagram-guide" d="M24 32H696M24 324H696"/><text class="diagram-kicker" x="24" y="23">SYSTEM VIEW / OPENAI FOUNDRY MIGRATION</text><path class="diagram-edge" marker-end="url(#arrow-openai-foundry-migration-article)" d="M194 112 H275"/><text class="diagram-edge-label" x="234" y="100">before</text><path class="diagram-edge" marker-end="url(#arrow-openai-foundry-migration-article)" d="M445 112 H526"/><text class="diagram-edge-label" x="484" y="100">HTTPS</text><path class="diagram-edge diagram-dashed" marker-end="url(#arrow-openai-foundry-migration-article)" d="M109 152 V232"/><text class="diagram-edge-label" x="164" y="196">DNS lookup</text><path class="diagram-edge diagram-dashed" marker-end="url(#arrow-openai-foundry-migration-article)" d="M194 272 H275"/><text class="diagram-edge-label" x="234" y="260">new answer</text><path class="diagram-edge" marker-end="url(#arrow-openai-foundry-migration-article)" d="M174 152 V204 H360 V232"/><text class="diagram-edge-label" x="275" y="195">after: HTTPS</text><path class="diagram-edge" marker-end="url(#arrow-openai-foundry-migration-article)" d="M445 272 H611 V152"/><text class="diagram-edge-label" x="556" y="260">same API</text><g class="diagram-node" transform="translate(24 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><rect x="1" y="2" width="26" height="18" rx="3"/><path d="M8 26h12M14 20v6M6 8l3 3-3 3M13 14h7"/></g></g><text class="diagram-node-title" x="12" y="47">Same VM client</text><text class="diagram-node-detail" x="12" y="65">Managed identity + API</text></g><g class="diagram-node" transform="translate(275 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><path d="M3 26V3h22v23M1 26h26M9 26V13h10v13M8 8h12"/></g></g><text class="diagram-node-title" x="12" y="47">Before: old PE</text><text class="diagram-node-detail" x="12" y="65">Private endpoint</text></g><g class="diagram-node diagram-accent" transform="translate(526 72)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><path d="M14 1l12 7v13l-12 7-12-7V8zM2 8l12 7 12-7M14 15v13"/><circle cx="14" cy="8" r="2"/></g></g><text class="diagram-node-title" x="12" y="47">Same account</text><text class="diagram-node-detail" x="12" y="65">OpenAI to AIServices</text></g><g class="diagram-node" transform="translate(24 232)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><circle cx="14" cy="14" r="7"/><path d="M14 1v6M14 21v6M1 14h6M21 14h6M5 5l4 4M19 19l4 4M5 23l4-4M19 9l4-4"/></g></g><text class="diagram-node-title" x="12" y="47">Same hostname</text><text class="diagram-node-detail" x="12" y="65">Private DNS updated</text></g><g class="diagram-node diagram-accent" transform="translate(275 232)"><rect width="170" height="80" rx="12"/><g transform="translate(12 12) scale(.7)"><g class="diagram-icon"><path d="M3 26V3h22v23M1 26h26M9 26V13h10v13M8 8h12"/></g></g><text class="diagram-node-title" x="12" y="47">After: new PE</text><text class="diagram-node-detail" x="12" y="65">Replacement address</text></g></svg></div><figcaption>동시에 활성화된 두 엔드포인트가 아니라 전후 경로를 비교한 개념도입니다. 계정 전환 전후에 동일한 VM ID, OpenAI 호스트 이름, 배포와 클라이언트를 사용했습니다. 기존 Private Endpoint를 교체했고 Private DNS가 다른 주소를 제공했습니다. 두 번의 성공 호출은 무중단, 롤백 성공이나 새 Foundry 기능의 동작을 입증하지 않습니다. 선은 표시된 관계를 나타내며, 점선은 구성 경로나 주 경로 이외의 관계를 구분합니다. 자세한 내용은 아래 절차를 확인하세요. 그림 내부 표기는 영문판과 공유합니다.</figcaption></figure>
+<div class="article-body"><blockquote>
+<p><strong>2026년 10월 7일 검토한 독립적인 기술 노트입니다.</strong> 공식 마이그레이션 지침, 가격 안내 또는 SLA가 아닙니다. 리소스의 업그레이드 가능 여부, 권한, DNS 토폴로지, 지역별 가용성과 포털 동작은 달라질 수 있습니다. 한 실습에서의 성공이 다른 환경에서의 성공을 보장하지 않습니다. 이 글을 준비하는 동안 Azure 요청이나 리소스 변경은 수행하지 않았습니다.</p>
+<p><strong>핵심적으로 구분할 점:</strong> 애플리케이션의 엔드포인트와 인증을 그대로 유지한다고 해서 사설 네트워크 경로까지 유지되거나 서비스 중단을 피할 수 있는 것은 아닙니다. 관측된 업그레이드는 클라이언트 인터페이스를 유지하면서 Private Endpoint와 DNS 등록을 교체했습니다.</p>
+</blockquote>
+
+<h2 id="scope-evidence">1. 관측 근거로 확인할 수 있는 것</h2>
+<p>검토한 실습에서는 동일한 Cognitive Services 계정의 종류를 <code>OpenAI</code>에서 <code>AIServices</code>로 변경하고 <code>allowProjectManagement</code>를 활성화했습니다. 기존 OpenAI API 엔드포인트, 배포, VM 시스템 할당 관리 ID와 클라이언트 파일 지문은 바뀌지 않았습니다. 테스트에는 GPT-5 모델 배포와 <code>POST /openai/v1/chat/completions</code>를 사용했으며, 새로운 Foundry API는 사용하지 않았습니다.</p>
+<table>
+<thead><tr><th>검증 항목</th><th>전환 전</th><th>전환 후</th></tr></thead>
+<tbody>
+<tr><td>계정 종류</td><td><code>OpenAI</code></td><td><code>AIServices</code></td></tr>
+<tr><td>기록된 성공 추론 호출 수</td><td>1</td><td>1</td></tr>
+<tr><td>HTTP 상태</td><td>200</td><td>200</td></tr>
+<tr><td>클라이언트 파일, OpenAI 엔드포인트, 배포와 VM ID</td><td>기준값 기록</td><td>변경 없음</td></tr>
+<tr><td>DNS 응답과 실제 HTTPS 연결 대상</td><td>기존 Private Endpoint 주소</td><td>새로 할당된 다른 Private Endpoint 주소</td></tr>
+<tr><td>완료된 비어 있지 않은 텍스트 응답</td><td>관측됨</td><td>관측됨</td></tr>
+<tr><td>공용 접근 / 로컬 키 인증</td><td>비활성화 / 비활성화</td><td>비활성화 / 비활성화</td></tr>
+</tbody>
+</table>
+<p>새 OpenAI DNS A 레코드에서 관측한 TTL은 <strong>10초</strong>였습니다. 이는 한 레코드의 값일 뿐, 전체 DNS 경로의 갱신 완료 기한이 아닙니다. 원본은 변경 전후의 성공 응답을 보고하지만, 연속 요청 타임라인이나 측정된 중단 시간은 제공하지 않습니다. Microsoft 문서에는 API 키가 유지된다고 명시되어 있지만, 여기서는 키 인증을 계속 비활성화했으므로 검증하지 않았습니다. 롤백이나 새로운 Foundry 기능도 실행하지 않았습니다.</p>
+
+<h2 id="before-after-path">2. 전환 전후: 호스트 이름은 유지되고 경로는 변경됨</h2>
+<p>전환 전에는 VM이 Azure IMDS(Instance Metadata Service)에서 토큰을 발급받고, 사설 DNS로 기존 OpenAI 호스트 이름을 확인한 뒤, 기존 Private Endpoint를 통해 OpenAI 계정에 HTTPS 요청을 보냅니다. 전환 후에는 동일한 VM, ID, 호스트 이름, 배포와 API 경로가 업그레이드된 계정에 연결된 새 Private Endpoint를 사용합니다. DNS는 교체된 사설 주소를 반환합니다.</p>
+<p>계정 자체의 시스템 할당 ID는 업그레이드 사전 조건입니다. 이는 추론 요청을 인증하는 VM ID와 <strong>다릅니다</strong>. 두 ID와 각 권한을 구분해서 관리하세요. 관측된 VM은 계정 범위의 기존 <code>Cognitive Services OpenAI User</code> 역할 할당을 유지했습니다.</p>
+<p>제어 평면의 미묘한 차이도 중요합니다. 원본에 따르면 대표 속성인 <code>properties.endpoint</code>는 Cognitive Services 호스트 이름으로 변경되었지만, <code>properties.endpoints</code>의 OpenAI 주소는 계속 사용할 수 있었습니다. 업그레이드 후 정상적으로 동작하는 OpenAI 클라이언트 URL을 단수형 엔드포인트 속성으로 자동 교체하지 마세요. 애플리케이션이 실제 호출하는 API에 맞는 엔드포인트를 비교해야 합니다.</p>
+<p>Private Endpoint는 VNet과 같은 지역에 있어야 하지만 대상 계정이 같은 지역에 있을 필요는 없습니다. 여기서 다루는 것은 인바운드 모델 접근뿐입니다. 추가 DNS 이름을 준비했다고 해서 모든 Agent Service 종속성, 아웃바운드 통합 또는 새로운 Foundry 기능의 사설 연결이 확보되는 것은 아닙니다.</p>
+
+<h2 id="prepare-change">3. 변경 전 사전 조건과 복구 계획</h2>
+<ul>
+<li>최신 업그레이드 문서에서 적용 가능 여부를 확인하세요. 기능 지원은 지역별로 다르고, 고객 관리형 키를 사용하는 업그레이드는 요청이 필요하며, 다른 제품 제한도 적용될 수 있습니다. 작업 일정을 잡기 전에 계정 제한, 정책, 잠금과 조직의 승인을 확인하세요.</li>
+<li>업그레이드 가이드는 구독 또는 리소스 그룹의 Owner 역할과 계정의 활성화된 시스템 할당 ID를 요구합니다. Private Endpoint 생성·승인, DNS zone과 VNet 링크 관리에 필요한 별도 권한도 조율하세요. 데이터 평면 OpenAI 역할이 네트워크 변경 권한까지 부여한다고 가정하지 마세요.</li>
+<li>기존 계정, 배포 구성, ID 역할 할당, 네트워크 제한, Private Endpoint 연결, NIC 소유 관계, zone group, DNS 레코드, VNet 링크와 사용자 지정 DNS 전달 구성을 비공개로 기록하세요. 구성 근거는 공개 저장소와 공유 로그 외부에 보관하세요.</li>
+<li>실제 클라이언트 네트워크에서 기준 테스트를 실행하고 클라이언트 체크섬을 보관하세요. 비교를 위해 엔드포인트, 배포와 인증 설정을 고정하세요. 모델 엔드포인트에 의존하지 않는 안전한 관리 경로도 유지하세요.</li>
+<li>중단을 허용할 작업 시간을 확보하고, 변경 담당자와 DNS 담당자를 지정하며, 중지 조건과 복구 의사결정 기한을 정하세요. 기준 호환성 검증이 통과할 때까지 Foundry 전용 상태를 새로 만들지 마세요.</li>
+</ul>
+<p><strong>되돌릴 수 있도록 계획했다고 해서 롤백이 검증된 것은 아닙니다.</strong> Microsoft는 프로젝트, 연결과 비 OpenAI 모델 배포를 제거한 뒤 롤백하는 절차를 문서화하고 있습니다. 이러한 제거는 새로 생성한 상태를 파괴할 수 있습니다. 승인된 백업을 보관하고 환경별 복구 절차를 연습하세요. 구성을 저장하거나 종류 필드를 되돌리는 것만으로 서비스 복구가 입증되지는 않습니다.</p>
+<p><strong>문서상 주의점:</strong> 검토한 롤백 Bicep 예제는 <code>publicNetworkAccess: 'Enabled'</code>를 명시적으로 설정합니다. 이는 이 글의 사설 전용 보안 목표와 충돌합니다. 해당 예제를 사설 전용 환경에 복사하거나 공용 접근을 비활성화한 채 두는 것이 검증된 대안이라고 가정하지 마세요. 업그레이드 전에 지원되며 정책을 준수하는 롤백 계획을 확정해야 합니다. 이 실습에서는 그러한 계획을 검증하지 않았습니다.</p>
+
+<h2 id="safe-sequence">4. 단계별 통과 조건을 갖춘 명시적인 변경 순서</h2>
+<p>관리 작업에는 인증된 관리 워크스테이션을 사용하세요. 반드시 추론 VM일 필요는 없습니다. 다음 Bash 조회 명령은 Azure 리소스를 변경하지 않습니다. 값을 비공개로 입력하세요. 조회 출력은 의도적으로 제한했지만, 여전히 통제된 작업 세션에서 다뤄야 합니다.</p>
+<pre><code class="language-bash">read -r -p "Subscription: " SUBSCRIPTION
+read -r -p "Resource group: " RESOURCE_GROUP
+read -r -p "Existing account: " ACCOUNT
+az cognitiveservices account update --help
+az cognitiveservices account show \
+  --subscription "$SUBSCRIPTION" -g "$RESOURCE_GROUP" -n "$ACCOUNT" \
+  --query '{kind:kind,state:properties.provisioningState,projectManagement:properties.allowProjectManagement,publicAccess:properties.publicNetworkAccess,keyAuthDisabled:properties.disableLocalAuth}' \
+  -o json</code></pre>
+<ol>
+<li><strong>기준 검증을 통과하세요.</strong> 사설 경로로 추론이 성공하는지 확인하고 속성과 클라이언트 체크섬을 기록하세요. 필요한 경우 승인된 변경을 통해 계정 자체의 ID를 활성화하되, VM ID를 교체하지 마세요.</li>
+<li><strong>변경 통제하에 기존 사설 연결·경로를 제거하세요.</strong> 기록된 CLI 작업은 먼저 서비스 측 연결을 제거하여 연결이 끊어진 Private Endpoint와 NIC를 남겼습니다. 이는 Private Endpoint 리소스 자체를 삭제하는 것과 다릅니다. 공개 가이드는 포털 사용자에게 업그레이드 전에 Private Endpoint를 삭제하거나 안내된 IaC 대안을 사용하도록 지시합니다. 연결이 끊어진 엔드포인트만 있으면 항상 충분하다고 가정하지 말고, 사용하는 방법에 맞는 문서화된 경로를 따르세요.</li>
+<li><strong>대체 계정이 아니라 기존 계정을 업그레이드하세요.</strong> 사전 조건과 제거 상태를 확인한 경우에만 진행하세요. 작업이 완료되고 계정이 여전히 의도한 리소스인지 검증하세요.</li>
+<li><strong>업그레이드 후 통과 조건을 확인하세요.</strong> 새 종류, 프로젝트 관리 플래그, 유지된 배포와 OpenAI 엔드포인트, VM의 유효 역할, 변경되지 않은 공용 접근 및 로컬 인증 제한을 확인하세요. 예상과 다르면 중지하세요.</li>
+<li><strong>새 DNS 관리 주체를 연결하기 전에 기존 엔드포인트 정리를 마치세요.</strong> 연결이 끊어진 기존 Private Endpoint가 남아 있다면 이를 제거하고, 관리형 NIC와 DNS zone group이 정리되었는지 확인한 후 대체 엔드포인트를 만드세요. 다음 절에서 소유 관계의 경계를 설명합니다.</li>
+<li><strong>재생성하고 검증하세요.</strong> VNet과 같은 지역의 지정된 서브넷에서 업그레이드된 계정의 <code>account</code> 하위 리소스를 대상으로 구분되는 이름의 Private Endpoint를 만드세요. 연결 승인과 프로비저닝 성공을 확인하고, DNS 통합을 복구한 뒤 변경하지 않은 기준 클라이언트를 다시 실행하세요.</li>
+</ol>
+<p><strong>리소스를 변경하는 예제입니다. 상태 확인용으로 실행하지 마세요.</strong> 원본을 바탕으로 한 이 명령은 기존 계정을 업데이트합니다. 사이트가 실행하는 명령이 아니며, 사전 조건이나 복구를 구현하지 않습니다. 엔드포인트 제거와 함께 수행하면 서비스가 중단될 수 있습니다. 설치된 CLI가 두 옵션을 모두 지원하는지 확인하고 먼저 변경 승인을 받으세요.</p>
+<pre><code class="language-bash">az cognitiveservices account update \
+  --subscription "$SUBSCRIPTION" \
+  --resource-group "$RESOURCE_GROUP" --name "$ACCOUNT" \
+  --kind AIServices --allow-project-management true \
+  --output none</code></pre>
+<p>어느 단계에서도 공용 네트워크 접근이나 키 인증을 임시로 활성화할 필요는 없습니다. 원본은 <code>publicNetworkAccess</code>를 비활성화하고 <code>disableLocalAuth</code>를 true로 유지했습니다. Private Endpoint 제거 자체가 공용 접근을 활성화하지는 않습니다. 공용 접근이 비활성화되어 있으면 오히려 사용할 수 있는 클라이언트 경로가 없어질 수 있습니다.</p>
+
+<h2 id="dns-ownership">5. DNS 소유 관계, 엔드포인트 재생성과 안전한 정리</h2>
+<table>
+<thead><tr><th>개체</th><th>교체 중 담당하는 역할</th></tr></thead>
+<tbody>
+<tr><td>서비스 측 Private Endpoint 연결</td><td>승인과 계정 연결을 관리합니다. 이를 제거해도 별도 엔드포인트 리소스가 연결이 끊긴 상태로 남을 수 있습니다.</td></tr>
+<tr><td>Private Endpoint와 관리형 NIC</td><td>사설 주소를 제공합니다. 기존 엔드포인트를 먼저 삭제하고 NIC의 자동 정리를 확인하세요. 연결된 NIC를 강제 삭제하는 것부터 시작하지 마세요.</td></tr>
+<tr><td>Private DNS zone group</td><td>엔드포인트를 zone에 연결하고 엔드포인트 관련 레코드를 관리합니다. DNS zone 자체가 아닙니다.</td></tr>
+<tr><td>Private DNS zone과 VNet 링크</td><td>재사용 가능한 zone과 필요한 링크는 유지하세요. 클라이언트의 확인자가 이를 조회할 수 있는지 검증하세요. 존재하는 것만으로 이름 확인이 보장되지는 않습니다.</td></tr>
+</tbody>
+</table>
+<p>기존·신규 엔드포인트의 zone group이 공유 zone의 동일 서비스 레코드를 서로 관리하지 않도록 해야 합니다. 이 절차에서는 대체 엔드포인트가 레코드를 등록하기 전에 기존 엔드포인트와 zone group 정리를 완료합니다. 기존 관리 주체를 나중에 삭제하면 새 경로에 필요한 레코드가 제거될 수 있습니다. NIC가 남아 있다면 엔드포인트 삭제가 완료되었고 실제로 연결되지 않은 NIC인지 확인한 후에만 별도 제거를 고려하세요. VM NIC, VNet, 서브넷, NSG, 계정, 배포 또는 전체 리소스 그룹을 삭제하지 마세요.</p>
+<table>
+<thead><tr><th>공용 엔드포인트 접미사</th><th>Private DNS zone</th><th>검증 범위</th></tr></thead>
+<tbody>
+<tr><td><code>openai.azure.com</code></td><td><code>privatelink.openai.azure.com</code></td><td>기존 클라이언트 호환성입니다. 적절한 경우 기존 zone을 재사용합니다.</td></tr>
+<tr><td><code>services.ai.azure.com</code></td><td><code>privatelink.services.ai.azure.com</code></td><td>추가 Foundry 엔드포인트의 준비 상태이며, 기능 동작 검증은 아닙니다.</td></tr>
+<tr><td><code>cognitiveservices.azure.com</code></td><td><code>privatelink.cognitiveservices.azure.com</code></td><td>추가 계정 엔드포인트의 준비 상태이며, 기능 동작 검증은 아닙니다.</td></tr>
+</tbody>
+</table>
+<p>업그레이드 문서는 추가 엔드포인트 IP 구성을 얻으려면 엔드포인트를 재생성해야 한다고 명시합니다. DNS 통합을 활성화한 상태에서 올바른 기존 zone을 선택하거나 없는 zone을 만드세요. 기존 zone이 있다는 이유로 통합을 끄면 안 됩니다. 모든 이름이 하나의 주소에 매핑된다고 가정하지 말고, 생성된 zone group, 각 엔드포인트 IP 구성과 대응하는 A 레코드를 확인하세요. 필요한 zone은 VM 자동 등록을 비활성화하여 클라이언트 VNet에 연결하세요. 마법사가 링크나 레코드를 이미 만들었다면 중복 생성하지 마세요.</p>
+<p>사용자 지정 또는 온프레미스 DNS를 사용하는 경우 DNS 담당자가 Azure 사설 DNS로 이어지는 적절한 전달·이름 확인 경로를 제공해야 합니다. 중간 캐시를 포함하여 실제 클라이언트에서 검증하세요. DNS 문제를 숨기려고 hosts 파일을 수정하거나 서비스 IP를 하드코딩하지 마세요. 과거 기록에서는 기존 A 레코드가 사라지고 통합 후 새 주소가 등록되는 것을 관측했습니다. 삭제 시점과 캐시 동작이 모든 환경에서 같지는 않습니다.</p>
+
+<h2 id="validation-client">6. 검증: 성공 상태 코드 이상의 근거 확보</h2>
+<p>원래 클라이언트는 SDK 로그인이나 API 키 없이 Python 표준 라이브러리와 curl을 사용했습니다. IPv4 DNS 응답이 예상 Private Endpoint 서브넷에 속하는지 확인하고, Cognitive Services 대상을 위한 새 VM ID 토큰을 IMDS에서 발급받았으며, 토큰과 모델 호출 모두 프록시를 우회하고 curl의 실제 원격 주소를 검사했습니다. HTTP 200, 비어 있지 않은 텍스트 응답과 <code>finish_reason == "stop"</code>를 요구했습니다. 토큰 값이 새로 바뀌는 것은 정상이며 ID가 변경되었다는 근거가 아닙니다.</p>
+<p>요청에는 <code>reasoning_effort="minimal"</code>과 <code>max_completion_tokens=256</code>을 사용했고, curl의 연결 및 전체 제한 시간은 20초와 180초였습니다. 이는 클라이언트 설정이며 측정된 지연 시간이나 모든 모델의 기본값이 아닙니다. 응답 문구가 정확히 일치할 필요는 없었습니다. 원래 진단 도구는 응답과 사용량 내용을 출력했으므로 공개 로그에는 적합하지 않습니다.</p>
+<p><a href="../../downloads/openai-foundry-migration/verify_private_inference.py">식별 정보를 제거한 제공 클라이언트</a>는 핵심 검사를 유지하되 구성을 인수로 받고, 응답은 메모리에만 보관하며, 식별자와 원시 오류를 출력하지 않습니다. 또한 호스트 이름 기반 TLS 검증을 유지하면서 curl을 사전 확인한 IPv4 주소 하나에 고정합니다. <strong>원본과 바이트 단위로 동일하지 않으며 클라우드에서 테스트하지 않았습니다.</strong> 주소 고정으로 인해 이 진단은 선택된 주소만 검사하며 애플리케이션의 전체 DNS·장애 조치 동작을 검증하지 않습니다. <code>--help</code>에서는 네트워크 트래픽이 발생하지 않으며, <code>--run-inference</code>가 토큰 발급과 한 번의 추론 요청을 명시적으로 허용합니다.</p>
+<p>시스템 할당 ID와 유효한 OpenAI 추론 권한을 가진 승인된 Azure VM에서 Python 3.9 이상과 curl을 사용하세요. 예제는 퍼블릭 Azure OpenAI 호스트 이름 형식과 원본 모델의 요청 옵션을 대상으로 합니다. 소버린 클라우드, 사용자 할당 ID 또는 임의의 모델을 위한 호환성 도구가 아닙니다. 파일의 잘 알려진 IMDS 주소는 프로토콜 엔드포인트이며 실습 환경 주소가 아닙니다. 추론은 인프라를 변경하지 않지만 할당량을 소비하고 비용이 발생할 수 있습니다.</p>
+<pre><code class="language-bash">python3 verify_private_inference.py --help
+sha256sum verify_private_inference.py
+
+read -r -p "Existing OpenAI HTTPS endpoint: " OPENAI_ENDPOINT
+read -r -p "Existing deployment: " OPENAI_DEPLOYMENT
+read -r -p "Expected private endpoint IPv4 subnet: " PE_SUBNET
+python3 verify_private_inference.py \
+  --endpoint "$OPENAI_ENDPOINT" --deployment "$OPENAI_DEPLOYMENT" \
+  --pe-subnet "$PE_SUBNET" --run-inference</code></pre>
+<p>변경 전후에 검토한 동일 파일과 인수를 사용하세요. 로컬에 기록한 체크섬을 비교하되 환경 세부 정보와 함께 공개하지 마세요. PASS는 해당 실행에서 확인된 사설 주소를 통해 추론이 완료되었음을 나타냅니다. 서브넷에 속한다는 사실만으로 올바른 엔드포인트임을 알 수는 없습니다. 선택된 주소를 실제 엔드포인트 NIC/IP 구성과 비공개로 비교하세요. 정제된 출력은 의도적으로 주소를 표시하지 않으므로 주소 변경 여부를 그 자체만으로 입증하지 않습니다.</p>
+<p>계정의 동일성, 배포, 엔드포인트 선택, 유효 역할 할당과 접근 제한에 대한 비공개 제어 평면 비교로 근거를 보완하세요. 토큰, 응답 텍스트, 원시 HTTP 본문이나 상세 curl 추적을 로그에 남기지 마세요. 운영 환경 승인 계획에는 승인된 반복 검사, 실제 클라이언트의 연결 풀·DNS 동작과 변경 시간대 모니터링을 추가하세요. 과거의 두 번 성공으로 이 테스트를 대체할 수 없습니다.</p>
+
+<h2 id="troubleshooting">7. 보안 경계를 완화하지 않고 계층별로 문제 해결하기</h2>
+<table>
+<thead><tr><th>증상</th><th>우선 확인할 사항</th></tr></thead>
+<tbody>
+<tr><td>업그레이드 차단</td><td>계정 ID, 작업 권한, 정책·잠금, 업그레이드 가능 여부, 리소스 제한과 남아 있는 사설 연결을 확인하세요. 사용 방법을 최신 가이드와 비교하고, 진행을 위해 무관한 리소스를 삭제하지 마세요.</td></tr>
+<tr><td>기존 주소 또는 공용 DNS 응답</td><td>클라이언트 네트워크에서 zone group 레코드, VNet 링크, 전달과 캐시를 확인하세요. 로컬 캐시를 비우기 전에 권한 있는 DNS 데이터를 확인하세요. 한 VM의 캐시를 비워도 상위 DNS 문제는 해결되지 않습니다.</td></tr>
+<tr><td>사설 DNS는 올바르지만 HTTPS 실패</td><td>엔드포인트 승인·프로비저닝, NIC IP 구성, 라우팅, NSG·방화벽 동작과 프록시 설정을 확인하세요. DNS 성공이 TCP 또는 TLS 도달성을 입증하지는 않습니다.</td></tr>
+<tr><td>HTTP 401</td><td>토큰 발급, Cognitive Services 대상, 만료와 의도한 VM ID를 확인하세요. 진단 중 토큰 내용이 노출되지 않도록 하세요.</td></tr>
+<tr><td>HTTP 403</td><td>네트워크 제한과 올바른 범위의 유효 데이터 평면 RBAC를 모두 확인하세요. 역할 전파를 고려하되 고정된 대기 시간이 충분하다고 보장하지 마세요.</td></tr>
+<tr><td>HTTP 404 또는 요청 거부</td><td>기존 OpenAI API 경로, 배포명과 모델이 지원하는 요청 필드를 확인하세요. 대표 계정 엔드포인트로 무조건 대체하지 마세요.</td></tr>
+<tr><td>HTTP 429, 5xx 또는 불완전한 텍스트</td><td>할당량, 제한, 일시적인 서비스 오류, 출력 한도와 종료 사유를 확인하세요. 진단 실패가 곧 마이그레이션 결함은 아닙니다. 제한된 재시도를 하기 전에 원인을 조사하세요.</td></tr>
+</tbody>
+</table>
+<p>제공 클라이언트는 원시 서버 오류 대신 일반적인 실패 사유를 의도적으로 출력합니다. 세부 정보가 필요하면 승인된 비공개 진단을 사용하세요. 추론을 자동 재시도하지 않으며, 성공 출력은 서비스 가용성, 콘텐츠 품질, ID 구성 또는 계정의 모든 엔드포인트를 보증하지 않습니다.</p>
+
+<h2 id="acceptance-limits">8. 변경 완료와 미검증 항목의 명시</h2>
+<p>제어 평면 검사와 실제 클라이언트 추론이 모두 통과하고, 새 DNS 소유 관계가 명확하며, 불필요한 연결 해제 리소스를 모두 확인한 후에만 변경을 승인하세요. 승인된 전후 비교와 복구 의사결정 기록은 비공개로 보관하세요. 광범위한 RBAC와 정책도 검토해야 합니다. 공식 가이드는 OpenAI로 제한되지 않은 권한이 업그레이드 후 추가 Foundry 기능을 노출할 수 있다고 경고합니다.</p>
+<p>근거가 뒷받침하는 결론은 제한적입니다. 이 환경에서는 계정의 인플레이스 업그레이드와 사설 경로 재구성 후 기존 관리 ID 기반 OpenAI 클라이언트가 다른 실제 사설 연결 대상을 통해 동작했습니다. 이는 무중단, API 키 불변, 성능 동등성, 성공한 롤백 또는 에이전트·평가·비 OpenAI 모델의 동작을 입증하지 않습니다. 해당 기능은 별도의 권한, 네트워크와 애플리케이션 승인 테스트가 필요합니다.</p>
+<p>테스트 후에는 승인된 개별 범위의 작업으로 실습 비용을 관리하세요. 테스트 VM의 할당을 해제해도 디스크, Private Endpoint, DNS 또는 다른 리소스 요금이 사라지지는 않습니다. 유지해야 할 계정이나 배포가 들어 있다면 VM만 정리하려고 리소스 그룹을 삭제하지 마세요. 가격 추정이나 비용 절감 보장을 의미하지 않습니다.</p>
+
+<h2 id="official-references">9. 공식 참고 문서와 절차에 적용되는 조건</h2>
+<ul>
+<li><a href="https://learn.microsoft.com/en-us/azure/foundry/how-to/upgrade-azure-openai?tabs=portal">Azure OpenAI를 Microsoft Foundry로 업그레이드</a>: 사전 조건, 적용 가능 여부, 유지되는 구성, 거버넌스 변경과 롤백 요구 사항을 설명합니다. 포털에서 요구하는 엔드포인트 삭제는 이 CLI 실습에서 먼저 수행한 서비스 연결 제거보다 범위가 넓습니다.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/foundry/how-to/upgrade-azure-openai#private-network-configuration">업그레이드: 사설 네트워크 구성</a>: 세 가지 엔드포인트 계열과 추가 IP 구성을 위한 재생성을 설명합니다. 엔드포인트 연속성을 기존 사설 연결 경로의 유지로 해석하면 안 됩니다.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/foundry/how-to/configure-private-link">Microsoft Foundry 네트워크 격리 구성</a>: Private Endpoint 권한, VNet 지역 배치, DNS와 검증을 설명합니다. 인바운드 연결은 전체 아웃바운드 Agent Service 격리와 구분됩니다.</li>
+<li><a href="https://learn.microsoft.com/en-us/cli/azure/cognitiveservices/account?view=azure-cli-latest#az-cognitiveservices-account-update">Azure CLI 계정 업데이트 참조</a>: 검토한 참조 문서는 <code>--kind</code>에 <code>AIServices</code>/<code>OpenAI</code>를 지정하는 옵션과 <code>--allow-project-management</code>를 제공합니다. 과거 명령의 성공에서 지원 여부를 추론하지 말고 설치된 CLI를 확인하세요.</li>
+</ul>
+<p>이 검토를 위해 해당 공개 참고 문서를 확인했습니다. 문서는 제품 동작과 현재 요구 사항을 설명하고, 실습 기록은 한 번의 실행을 설명합니다. 특히 엔드포인트 연속성, 롤백과 네트워크 유지에 관한 표현이 측정 근거보다 넓은 경우, 추정한 보장이 아니라 문서화된 제약과 해당 환경의 변경 통제를 따르세요.</p>
+<h2 id="resources">참고 리소스</h2><p>원본 자료를 기반으로 변수화한 참고 리소스입니다. 자리표시자, 권한, 의존성과 배포 영향을 검토한 뒤 사용하세요. 한 번에 자동 배포되는 패키지는 아닙니다.</p><ul class="download-list"><li><a download href="../../downloads/openai-foundry-migration/verify_private_inference.py">식별 정보를 제거한 사설 경로 검증 클라이언트(Python)</a><p>원본을 바탕으로 매개변수화한 진단 도구로, Azure VM의 시스템 할당 관리 ID를 사용합니다. 인프라를 변경하지 않으며 명시적으로 허용할 때 과금될 수 있는 추론 요청을 한 번 보냅니다. 출력에는 응답 본문과 환경 식별 정보가 포함되지 않습니다. 원본과 동일하지 않으며 게시 준비 중 클라우드에서 테스트하지 않았습니다.</p></li></ul><h2 id="editorial-notes">편집 및 출처 안내</h2><p>다음 원본 자료를 하나의 기술 가이드로 정리했습니다.</p><ul><li>Azure OpenAI에서 Microsoft Foundry로의 수동 마이그레이션 실습</li><li>관리 ID 기반 Private Endpoint 검증 클라이언트</li><li>Microsoft Learn: Azure OpenAI를 Microsoft Foundry로 업그레이드</li><li>Microsoft Learn: Microsoft Foundry 네트워크 격리 구성</li><li>Azure CLI 참조: Cognitive Services 계정 업데이트</li></ul><ul><li>비공개 원본 위치, 원래 파일명과 리소스 이름, 원본 커밋 및 클라이언트 지문 값, 구독&#183;테넌트 식별자, 엔드포인트, IP 주소, 사용자 경로, 자격 증명, 원시 응답과 원본 스크린샷은 공개하지 않습니다.</li><li>기록에는 마이그레이션 전후 각각 한 번의 성공한 추론 호출만 있습니다. 연속 가용성 모니터링, 지연 시간 측정, 롤백 실행, API 키 연속성 테스트 또는 새로운 Foundry 기능 검증은 포함되지 않습니다.</li><li>제공 클라이언트는 주소 고정과 출력 축소를 적용하여 별도로 정제한 버전이며, 과거 실습에서 변경 없이 사용한 클라이언트가 아닙니다. 게시 검사는 오프라인으로만 수행했으며 Azure 호출이나 리소스 변경은 하지 않았습니다.</li><li>환경별 백업, 배포 템플릿, DNS 내보내기와 자동 파괴적 정리 작업은 의도적으로 제공하지 않습니다. 예제를 적용하기 전에 최신 서비스 문서와 조직의 변경 통제를 검토하세요.</li></ul><p>원본 자격증명이나 비공개 저장소 링크는 포함하지 않습니다. 실제 구성값을 넣은 파일이나 운영 환경의 출력을 이 공개 사이트에 다시 올리지 마세요.</p></div>
+</article></main>
+<footer><span>Azure Tech Field Notes</span><span>개인 기술 기록이며 Microsoft의 공식 게시물이 아닙니다.</span><span>한국어판 &middot; 2026년 10월</span></footer>
+<div class="sr-only" id="status" role="status" aria-live="polite"></div>
+</body></html>

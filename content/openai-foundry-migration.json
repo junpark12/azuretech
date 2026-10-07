@@ -1,0 +1,28 @@
+{
+  "slug": "openai-foundry-migration",
+  "category": "AI",
+  "title": "Azure OpenAI to Foundry: Keep the Client, Rebuild the Private Path",
+  "summary": "A practical account-upgrade guide separating unchanged OpenAI client behavior from private endpoint and DNS reconstruction, with managed-identity validation, safe cleanup, and explicit limits on the evidence.",
+  "publishedOn": "2026-10-07",
+  "bodyFile": "openai-foundry-migration.html",
+  "sourceDocuments": [
+    "Azure OpenAI to Microsoft Foundry Manual Migration Lab",
+    "Managed-Identity Private Endpoint Verification Client",
+    "Microsoft Learn: Upgrade Azure OpenAI to Microsoft Foundry",
+    "Microsoft Learn: Configure Network Isolation for Microsoft Foundry",
+    "Azure CLI Reference: Cognitive Services Account Update"
+  ],
+  "downloads": [
+    {
+      "path": "downloads/openai-foundry-migration/verify_private_inference.py",
+      "label": "Sanitized private-path verification client (Python)",
+      "description": "Source-derived, parameterized diagnostic for a system-assigned managed identity on an Azure VM. No infrastructure mutations; explicit opt-in sends one billable inference request. Output excludes response bodies and environment identifiers. Not identical to the source and not cloud-tested during publication."
+    }
+  ],
+  "omissions": [
+    "Private source locations, original file and resource names, source commit and client fingerprint values, subscription and tenant identifiers, endpoints, IP addresses, user paths, credentials, raw responses and original screenshots are not published.",
+    "The historical record contains one successful inference call before and one after migration, not continuous availability monitoring, latency measurements, rollback execution, API-key continuity testing or validation of new Foundry features.",
+    "The companion is an independently sanitized adaptation with address pinning and reduced output, not the unchanged historical client. Publication checks are offline only; no Azure calls or resource changes were performed.",
+    "Environment-specific backups, deployment templates, DNS exports and automated destructive cleanup are intentionally omitted. Review the current service documentation and your organization's change controls before adapting the examples."
+  ]
+}

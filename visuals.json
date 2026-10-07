@@ -1,4 +1,74 @@
 {
+  "openai-foundry-migration": {
+    "title": "Keep the client contract; replace the private path",
+    "caption": "Conceptual before/after path, not simultaneous active endpoints. The same VM identity, OpenAI hostname, deployment and client were used before and after the account upgrade. The old private endpoint was replaced and private DNS supplied a different address. Two successful calls do not establish zero downtime, successful rollback or working new Foundry features.",
+    "nodes": [
+      {"x":24,"y":72,"title":"Same VM client","detail":"Managed identity + API","icon":"client"},
+      {"x":275,"y":72,"title":"Before: old PE","detail":"Private endpoint","icon":"gateway"},
+      {"x":526,"y":72,"title":"Same account","detail":"OpenAI to AIServices","icon":"model","accent":true},
+      {"x":24,"y":232,"title":"Same hostname","detail":"Private DNS updated","icon":"tools"},
+      {"x":275,"y":232,"title":"After: new PE","detail":"Replacement address","icon":"gateway","accent":true}
+    ],
+    "edges": [
+      {"d":"M194 112 H275","x":234,"y":100,"label":"before"},
+      {"d":"M445 112 H526","x":484,"y":100,"label":"HTTPS"},
+      {"d":"M109 152 V232","x":164,"y":196,"label":"DNS lookup","dashed":true},
+      {"d":"M194 272 H275","x":234,"y":260,"label":"new answer","dashed":true},
+      {"d":"M174 152 V204 H360 V232","x":275,"y":195,"label":"after: HTTPS"},
+      {"d":"M445 272 H611 V152","x":556,"y":260,"label":"same API"}
+    ]
+  },
+  "hosted-agent-latency": {
+    "title": "Separate startup class from answer timing",
+    "caption": "Conceptual diagnostic path. Client timers, platform latency headers and application traces have different boundaries. Model calls, initialization and optional tool work can overlap; this diagram is not a measured waterfall. The chart below shows five client request-to-stream-end observations only.",
+    "nodes": [
+      {"x":24,"y":72,"title":"Client timers","detail":"First text / stream end","icon":"client"},
+      {"x":275,"y":72,"title":"Platform + session","detail":"Cold / Warm / Resume","icon":"gateway","accent":true},
+      {"x":526,"y":72,"title":"Agent container","detail":"Readiness + handling","icon":"cluster"},
+      {"x":275,"y":232,"title":"Correlated traces","detail":"Nested, not additive","icon":"chart"},
+      {"x":526,"y":232,"title":"Model and tools","detail":"Initialization or work","icon":"model"}
+    ],
+    "edges": [
+      {"d":"M194 112 H275","x":234,"y":100,"label":"invoke"},
+      {"d":"M445 112 H526","x":484,"y":100,"label":"forward"},
+      {"d":"M611 152 V232","x":653,"y":197,"label":"calls"},
+      {"d":"M360 152 V232","x":404,"y":197,"label":"headers","dashed":true},
+      {"d":"M526 272 H445","x":484,"y":260,"label":"spans","dashed":true}
+    ],
+    "chart": {
+      "title": "Five calls: request start to normal stream end",
+      "subtitle": "September 30, 2026 / individual observations / seconds",
+      "caption": "Three Cold calls, one Warm call and one Resume call; no averages, percentiles or guarantees. A is the same session in Cold, Warm and explicitly stopped/idle Resume states; B and C are separate Cold sessions. Authentication and the stop/poll wait are excluded. These are client_stream_end_ms values converted to seconds, not first-text latency or additive component timings.",
+      "after": "measurements",
+      "unit": "seconds",
+      "max": 100,
+      "ticks": [0,25,50,75,100],
+      "rows": [
+        {"label":"Cold A","value":83.74,"sourceRow":1},
+        {"label":"Warm A","value":6.78,"sourceRow":2},
+        {"label":"Resume A","value":25.92,"sourceRow":3},
+        {"label":"Cold B","value":18.10,"sourceRow":4},
+        {"label":"Cold C","value":25.35,"sourceRow":5}
+      ]
+    }
+  },
+  "aks-hyperscale": {
+    "title": "Control-plane capacity is not worker readiness",
+    "caption": "Simplified responsibility map, not a benchmark or full Kubernetes architecture. API Priority and Fairness controls concurrent API work; etcd uses six resource partitions with independent limits. Scheduling selects workers, while image pulls, storage, startup and probes determine later readiness. Controller loops and many bidirectional interactions are omitted.",
+    "nodes": [
+      {"x":24,"y":72,"title":"API clients","detail":"Controllers + operators","icon":"client"},
+      {"x":275,"y":72,"title":"API server + APF","detail":"Seats are concurrency","icon":"gateway","accent":true},
+      {"x":526,"y":72,"title":"Six etcd partitions","detail":"Independent storage","icon":"registry"},
+      {"x":275,"y":232,"title":"Scheduler","detail":"Feasibility + binding","icon":"tools"},
+      {"x":526,"y":232,"title":"Worker lifecycle","detail":"Images, volumes, Ready","icon":"cluster"}
+    ],
+    "edges": [
+      {"d":"M194 112 H275","x":234,"y":100,"label":"API work"},
+      {"d":"M445 112 H526","x":484,"y":100,"label":"state"},
+      {"d":"M360 152 V232","x":407,"y":196,"label":"watch / bind","dashed":true},
+      {"d":"M445 272 H526","x":484,"y":260,"label":"placement"}
+    ]
+  },
   "aks-confidential-vm": {
     "title": "The confidential boundary is the node, not each Pod",
     "caption": "Conceptual protection boundary. Supported CVM hardware protects guest memory and CPU state from the cloud host. The guest OS, kubelet, application Pods and node agents share the VM trust boundary; this does not create separate confidential enclaves for individual Pods. Disk encryption, TLS, application security and optional attestation-based key release remain separate controls. The managed AKS control plane is not shown.",

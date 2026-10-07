@@ -1,5 +1,5 @@
 {
-    "pageCount":  28,
+    "pageCount":  34,
     "resources":  [
                       "downloads/ai-gateway/gateway-requests.http",
                       "downloads/ai-gateway/resource-commands.sh",
@@ -30,6 +30,7 @@
                       "downloads/istio-gateway-api/current_env/internal-nginx-controller.yaml",
                       "downloads/istio-gateway-api/current_env/sample-app.yaml",
                       "downloads/istio-gateway-api/tobe_env/gateway.yaml",
+                      "downloads/openai-foundry-migration/verify_private_inference.py",
                       "downloads/self-hosted-aca/deploy.yml",
                       "downloads/self-hosted-aca/Dockerfile",
                       "downloads/self-hosted-aca/dockerignore.txt",
@@ -42,168 +43,220 @@
                   ],
     "topics":  [
                    {
+                       "title":  "Azure OpenAI to Foundry: Keep the Client, Rebuild the Private Path",
+                       "paths":  {
+                                     "en":  "topics/openai-foundry-migration.html",
+                                     "ko":  "ko/topics/openai-foundry-migration.html"
+                                 },
+                       "category":  "AI",
+                       "slug":  "openai-foundry-migration",
+                       "sourceDocumentCount":  5,
+                       "titleKo":  "Azure OpenAI에서 Foundry로: 클라이언트는 유지하고 사설 경로는 재구성하기",
+                       "resourceCount":  1,
+                       "publishedOn":  "2026-10-07"
+                   },
+                   {
+                       "title":  "Not Every Slow Hosted Agent Request Is a Cold Start",
+                       "paths":  {
+                                     "en":  "topics/hosted-agent-latency.html",
+                                     "ko":  "ko/topics/hosted-agent-latency.html"
+                                 },
+                       "category":  "AI",
+                       "slug":  "hosted-agent-latency",
+                       "sourceDocumentCount":  4,
+                       "titleKo":  "느린 Hosted Agent 요청이 모두 콜드 스타트는 아닙니다",
+                       "resourceCount":  0,
+                       "publishedOn":  "2026-10-07"
+                   },
+                   {
+                       "title":  "AKS Hyperscale Control Plane: Size the Bottleneck, Read the Metrics",
+                       "paths":  {
+                                     "en":  "topics/aks-hyperscale.html",
+                                     "ko":  "ko/topics/aks-hyperscale.html"
+                                 },
+                       "category":  "AKS",
+                       "slug":  "aks-hyperscale",
+                       "sourceDocumentCount":  3,
+                       "titleKo":  "AKS Hyperscale 컨트롤 플레인: 병목에 맞춘 크기 선택과 메트릭 해석",
+                       "resourceCount":  0,
+                       "publishedOn":  "2026-10-07"
+                   },
+                   {
+                       "title":  "APIM AI Gateway: Content Safety for Streaming Responses",
                        "paths":  {
                                      "en":  "topics/content-safety-streaming.html",
                                      "ko":  "ko/topics/content-safety-streaming.html"
                                  },
+                       "category":  "AI",
                        "slug":  "content-safety-streaming",
+                       "sourceDocumentCount":  3,
                        "titleKo":  "APIM AI Gateway: 스트리밍 응답을 위한 Content Safety",
                        "resourceCount":  3,
-                       "sourceDocumentCount":  3,
-                       "category":  "AI",
-                       "title":  "APIM AI Gateway: Content Safety for Streaming Responses"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "Azure AI Gateway Tier: Preview Setup, Policies, MCP, and Token Monitoring",
                        "paths":  {
                                      "en":  "topics/ai-gateway.html",
                                      "ko":  "ko/topics/ai-gateway.html"
                                  },
+                       "category":  "AI",
                        "slug":  "ai-gateway",
+                       "sourceDocumentCount":  1,
                        "titleKo":  "Azure AI Gateway 계층: 미리 보기 설정, 정책, MCP 및 토큰 모니터링",
                        "resourceCount":  4,
-                       "sourceDocumentCount":  1,
-                       "category":  "AI",
-                       "title":  "Azure AI Gateway Tier: Preview Setup, Policies, MCP, and Token Monitoring"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "Codex on Azure: Foundry setup, APIM routing, streaming failures, and capacity design",
                        "paths":  {
                                      "en":  "topics/codex.html",
                                      "ko":  "ko/topics/codex.html"
                                  },
+                       "category":  "AI",
                        "slug":  "codex",
+                       "sourceDocumentCount":  5,
                        "titleKo":  "Azure의 Codex: Foundry 설정, APIM 라우팅, 스트리밍 실패와 용량 설계",
                        "resourceCount":  0,
-                       "sourceDocumentCount":  5,
-                       "category":  "AI",
-                       "title":  "Codex on Azure: Foundry setup, APIM routing, streaming failures, and capacity design"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "Existing APIM as a Foundry AI Gateway: Backend Pools, Managed Identity, Retry, and Monitoring",
                        "paths":  {
                                      "en":  "topics/ai-gateway-existing.html",
                                      "ko":  "ko/topics/ai-gateway-existing.html"
                                  },
+                       "category":  "AI",
                        "slug":  "ai-gateway-existing",
+                       "sourceDocumentCount":  4,
                        "titleKo":  "기존 APIM을 Foundry AI 게이트웨이로 사용하기: 백엔드 풀, 관리 ID, 재시도 및 모니터링",
                        "resourceCount":  15,
-                       "sourceDocumentCount":  4,
-                       "category":  "AI",
-                       "title":  "Existing APIM as a Foundry AI Gateway: Backend Pools, Managed Identity, Retry, and Monitoring"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "Translation latency across six GPT models: an April 2026 Azure benchmark",
                        "paths":  {
                                      "en":  "topics/translation-performance.html",
                                      "ko":  "ko/topics/translation-performance.html"
                                  },
+                       "category":  "AI",
                        "slug":  "translation-performance",
+                       "sourceDocumentCount":  1,
                        "titleKo":  "6개 GPT 모델의 번역 지연: 2026년 4월 Azure 벤치마크",
                        "resourceCount":  0,
-                       "sourceDocumentCount":  1,
-                       "category":  "AI",
-                       "title":  "Translation latency across six GPT models: an April 2026 Azure benchmark"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "AKS Application Routing Gateway API: Migration, Routing, and Key Vault TLS",
                        "paths":  {
                                      "en":  "topics/istio-gateway-api.html",
                                      "ko":  "ko/topics/istio-gateway-api.html"
                                  },
+                       "category":  "AKS",
                        "slug":  "istio-gateway-api",
+                       "sourceDocumentCount":  11,
                        "titleKo":  "AKS Application Routing Gateway API: 마이그레이션, 라우팅 및 Key Vault TLS",
                        "resourceCount":  6,
-                       "sourceDocumentCount":  11,
-                       "category":  "AKS",
-                       "title":  "AKS Application Routing Gateway API: Migration, Routing, and Key Vault TLS"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "AKS Confidential VMs: Azure Linux 3 Deployment and Honest Upgrade Evidence",
                        "paths":  {
                                      "en":  "topics/aks-confidential-vm.html",
                                      "ko":  "ko/topics/aks-confidential-vm.html"
                                  },
+                       "category":  "AKS",
                        "slug":  "aks-confidential-vm",
+                       "sourceDocumentCount":  2,
                        "titleKo":  "AKS 기밀 VM: Azure Linux 3 배포와 과장 없는 업그레이드 근거",
                        "resourceCount":  1,
-                       "sourceDocumentCount":  2,
-                       "category":  "AKS",
-                       "title":  "AKS Confidential VMs: Azure Linux 3 Deployment and Honest Upgrade Evidence"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "Artifact Streaming on AKS: Configure, Benchmark, and Roll Back",
                        "paths":  {
                                      "en":  "topics/acr-streaming.html",
                                      "ko":  "ko/topics/acr-streaming.html"
                                  },
+                       "category":  "AKS",
                        "slug":  "acr-streaming",
+                       "sourceDocumentCount":  1,
                        "titleKo":  "AKS Artifact Streaming: 구성, 벤치마크, 롤백",
                        "resourceCount":  0,
-                       "sourceDocumentCount":  1,
-                       "category":  "AKS",
-                       "title":  "Artifact Streaming on AKS: Configure, Benchmark, and Roll Back"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "Migrating AKS from No Network Policy to Cilium",
                        "paths":  {
                                      "en":  "topics/cilium-network-policy.html",
                                      "ko":  "ko/topics/cilium-network-policy.html"
                                  },
+                       "category":  "AKS",
                        "slug":  "cilium-network-policy",
+                       "sourceDocumentCount":  1,
                        "titleKo":  "네트워크 정책이 없는 AKS를 Cilium으로 마이그레이션하기",
                        "resourceCount":  0,
-                       "sourceDocumentCount":  1,
-                       "category":  "AKS",
-                       "title":  "Migrating AKS from No Network Policy to Cilium"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "Self-Managed Envoy Gateway on AKS and NGINX Migration",
                        "paths":  {
                                      "en":  "topics/envoy-gateway.html",
                                      "ko":  "ko/topics/envoy-gateway.html"
                                  },
+                       "category":  "AKS",
                        "slug":  "envoy-gateway",
+                       "sourceDocumentCount":  2,
                        "titleKo":  "AKS의 자체 관리형 Envoy Gateway와 NGINX 마이그레이션",
                        "resourceCount":  0,
-                       "sourceDocumentCount":  2,
-                       "category":  "AKS",
-                       "title":  "Self-Managed Envoy Gateway on AKS and NGINX Migration"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "ASE v3 Front-end Scaling: Signals, Timing, and Cost",
                        "paths":  {
                                      "en":  "topics/ase-frontend-scaling.html",
                                      "ko":  "ko/topics/ase-frontend-scaling.html"
                                  },
+                       "category":  "App Service",
                        "slug":  "ase-frontend-scaling",
+                       "sourceDocumentCount":  1,
                        "titleKo":  "ASE v3 프런트 엔드 확장: 신호, 소요 시간 및 비용",
                        "resourceCount":  0,
-                       "sourceDocumentCount":  1,
-                       "category":  "App Service",
-                       "title":  "ASE v3 Front-end Scaling: Signals, Timing, and Cost"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "Managed Instance on App Service: Capabilities and PoC",
                        "paths":  {
                                      "en":  "topics/managed-instance.html",
                                      "ko":  "ko/topics/managed-instance.html"
                                  },
+                       "category":  "App Service",
                        "slug":  "managed-instance",
+                       "sourceDocumentCount":  2,
                        "titleKo":  "App Service의 Managed Instance: 기능과 PoC",
                        "resourceCount":  0,
-                       "sourceDocumentCount":  2,
-                       "category":  "App Service",
-                       "title":  "Managed Instance on App Service: Capabilities and PoC"
+                       "publishedOn":  null
                    },
                    {
+                       "title":  "Private GitHub Actions Runners on Azure Container Apps with KEDA",
                        "paths":  {
                                      "en":  "topics/self-hosted-aca.html",
                                      "ko":  "ko/topics/self-hosted-aca.html"
                                  },
+                       "category":  "GitHub",
                        "slug":  "self-hosted-aca",
+                       "sourceDocumentCount":  3,
                        "titleKo":  "KEDA를 활용한 Azure Container Apps의 프라이빗 GitHub Actions 실행기",
                        "resourceCount":  9,
-                       "sourceDocumentCount":  3,
-                       "category":  "GitHub",
-                       "title":  "Private GitHub Actions Runners on Azure Container Apps with KEDA"
+                       "publishedOn":  null
                    }
                ],
-    "edition":  "2026-09",
+    "edition":  "2026-10",
     "languages":  [
                       "en",
                       "ko"
                   ],
-    "topicCount":  13,
+    "topicCount":  16,
     "portalScreenshots":  [
                               {
                                   "capturedOn":  "2026-09-17",

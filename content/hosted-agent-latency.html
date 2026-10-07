@@ -1,0 +1,131 @@
+<h2 id="scope">A slow response is a question, not a diagnosis</h2>
+<p>A Hosted Agent request can wait for platform admission, a session sandbox, application initialization, model work, tools, and transport. Calling the entire delay a “cold start” hides the distinction that determines what to investigate. Start with four separate questions: which start type did the platform report, when did useful answer text arrive, when did the stream finish, and which traces explain the interval?</p>
+<blockquote><strong>Unofficial historical observations, not a performance guarantee or SLA.</strong> The five measurements below were recorded on September 30, 2026. This article, published October 7, 2026, reviews those records and the measurement code; the experiment was not rerun for publication. Results vary with workload, model, deployment, session state, network, and service changes. Diagnostic timings are not SLA or billing metrics.</blockquote>
+<p>The tested agent used the streaming Responses protocol, a GPT-5 model deployment, fixed agent instructions, and access to MCP, search, and session-file tools. The baseline prompt asked for a short acknowledgement without using tools. That request did not remove the agent's initialization or guarantee that no internal tool-related activity occurred. The deployment notes described one CPU and 2 GiB of memory, but the measurement did not independently pin or reverify the active version.</p>
+<p>An earlier <a href="https://zenn.dev/microsoft/articles/21199b9ceff909" target="_blank" rel="noopener noreferrer">seven-call Zenn study</a> motivated the investigation. It used a different minimal agent and model/API behavior; its measurements and graphics are not this article's five-call dataset. Neither that study nor these five calls establishes a latency distribution, percentile, or universal cold-start penalty.</p>
+
+<h2 id="startup-types">Classify the start; do not infer it from a stopwatch</h2>
+<table><thead><tr><th>Reported class</th><th>What it distinguishes</th><th>What it does not establish</th></tr></thead><tbody>
+<tr><td>Cold</td><td>A request that starts a new session execution environment.</td><td>That this is the agent's first-ever invocation, or that shared infrastructure and image caches are empty.</td></tr>
+<tr><td>Warm</td><td>A request using an already running session.</td><td>That model calls, retries, tools, or response delivery will be fast.</td></tr>
+<tr><td>Resume</td><td>A request that resumes an idle session.</td><td>That restoring persisted state costs the same as a warm invocation.</td></tr>
+</tbody></table>
+<p>Use <code>x-ms-debug-latency-session-start-type</code>, not the command name, requested test mode, or elapsed duration, to label each result. Keep the requested mode separately; a requested Warm sample can actually Resume if the session has become idle. If the header is absent, preserve an unknown class rather than guessing.</p>
+<p>The current official session documentation describes a configurable idle timeout of 120–3,600 seconds, with a 900-second default, for sessions created for that agent version. These are documented configuration values, not a threshold measured by these five calls. The recorded Resume followed an explicit test-session stop and confirmation of idle; it does not demonstrate natural timeout behavior. Measure actual transitions if idle behavior is your question, and check the applicable version configuration.</p>
+
+<h2 id="measurement-boundaries">Put every timer on a named boundary</h2>
+<p>Enable the documented latency diagnostic on the invocation. It supports the Responses and Invocations protocols, but their session-binding mechanisms differ.</p>
+<pre><code class="language-http">x-ms-debug-latency-enabled: true</code></pre>
+<table><thead><tr><th>Response-header suffix</th><th>Documented interval or meaning</th></tr></thead><tbody>
+<tr><td><code>session-start-type</code></td><td>Observed start classification: cold, warm, or resume.</td></tr>
+<tr><td><code>platform-preprocessing-ms</code></td><td>Admission, authentication, session lookup, and orchestration.</td></tr>
+<tr><td><code>infra-setup-ms</code></td><td>Micro-VM provisioning; normally omitted for Warm.</td></tr>
+<tr><td><code>container-readiness-ms</code></td><td>Micro-VM creation until the container reports ready; normally omitted for Warm.</td></tr>
+<tr><td><code>container-response-ms</code></td><td>Proxy forwarding until response headers are committed, including request transfer, connection setup, agent handling, retries, and output-policy buffering.</td></tr>
+<tr><td><code>response-begin-ms</code></td><td>Service acceptance until response headers are committed—not first body byte, first SSE event, first answer text, or completion.</td></tr>
+</tbody></table>
+<p>All these suffixes use the <code>x-ms-debug-latency-</code> prefix, and timing values are integer milliseconds. The four component timings add to response-begin when available as documented. If provisioning boundaries cannot be captured on Cold or Resume, the platform can omit infrastructure and readiness headers and include that time in preprocessing. Missing is not a measured zero.</p>
+<table><thead><tr><th>Client field</th><th>End event, measured from the same HTTP request start</th></tr></thead><tbody>
+<tr><td><code>client_headers_ms</code></td><td>HTTP status and response headers received.</td></tr>
+<tr><td><code>client_first_body_chunk_ms</code></td><td>First nonempty decoded body chunk received; it can be a keep-alive or lifecycle event.</td></tr>
+<tr><td><code>client_first_text_ms</code></td><td>First nonempty answer-text delta parsed.</td></tr>
+<tr><td><code>client_response_completed_ms</code></td><td>Response-completed event received.</td></tr>
+<tr><td><code>client_stream_end_ms</code></td><td>Normal exhaustion of the response-body stream.</td></tr>
+<tr><td><code>client_elapsed_ms</code></td><td>The client's stream processing and response cleanup finish, or a failure/interruption ends the wait.</td></tr>
+</tbody></table>
+<p>The five published totals use <code>client_stream_end_ms</code>, converted to seconds and rounded as recorded. They start immediately before the streaming HTTP call and end after the body iterator is exhausted. They are not time to first text and not the more general elapsed/cleanup field. Token acquisition and the pre-Resume stop/poll wait were measured outside that interval. These client timestamps are cumulative: do not add them together.</p>
+<p>A <code>response.output_text.delta</code> marks text becoming available to this client, not necessarily the model's internal first-token boundary. A <code>response.completed</code> event can precede stream closure. Preserve null if no text delta is observed, and distinguish normal completion from a timeout or failed response. The source summary does not publish per-call first-text or response-completed values, so this article does not invent them.</p>
+<p>The official <code>x-ms-debug-latency-final</code> trailer is best-effort on HTTP/2 or later. It can contain <code>first_byte_ms</code> and <code>total_last_byte_ms</code>, both measured from service acceptance. The historical HTTPX client did not collect trailers; requesting HTTP/2 did not prove that it was negotiated. A later GET for the same response can expose stored original timings, subject to eventual consistency and documented limitations. Those timings do not measure the GET itself. Client-minus-server differences are not automatically pure network RTT.</p>
+
+<h2 id="reproduce">Reproduce the design without changing the workload</h2>
+<p>Use a disposable test session in an environment you are authorized to invoke; calls can incur charges and execute tools. No cloud operations were performed for this article. The following fragments explain the request and instrumentation contract, not a ready-to-run client. Keep credentials and correlation identifiers private, and do not log raw prompts, answer payloads, authorization headers, or environment dumps.</p>
+<ol>
+<li>Record the intended deployment, model settings, synthetic prompt, client location, connection policy, and test time privately. Keep routing and configuration unchanged across the comparison. Avoid a Playground message or smoke invocation immediately before the intended Cold sample.</li>
+<li>Issue one streaming Responses request without a session binding for Cold. Capture the returned session binding securely. Do not silently substitute a new session if it is absent, invalid, or different from the expected binding.</li>
+<li>Promptly issue the same request with that binding for Warm. Reuse the prompt and settings, but do not add conversation history. The historical client created a separate HTTP client per sample, so the comparison was not a persistent-connection benchmark.</li>
+<li>For an explicitly approved Resume test, stop only that disposable session, confirm idle with bounded polling, then invoke the same session. Keep stop/poll time separate. Do not stop a shared agent, delete files, or redeploy to manufacture a sample.</li>
+<li>Accept a successful class-specific sample only after HTTP success, a valid SSE stream, a completed response, normal stream termination, and the expected reported start type. Keep mismatches and failed attempts as separate records; do not overwrite them with an automatic retry.</li>
+<li>Repeat additional Cold samples in new sessions if needed. Preserve failures, actual protocol, missing headers, token counts, observed tools, and timer boundaries. Plan sample size before drawing statistical conclusions; five calls are insufficient for representative percentiles.</li>
+</ol>
+<p>For Responses, the session binding belongs in the JSON body. This illustrative construction assumes the variables are supplied securely by the caller; it sends nothing by itself.</p>
+<pre><code class="language-python">payload = {
+    "model": model_deployment,
+    "input": synthetic_prompt,
+    "stream": True,
+}
+if test_session_id is not None:
+    payload["agent_session_id"] = test_session_id
+# Intentionally omit conversation and previous_response_id.</code></pre>
+<p><code>agent_session_id</code> reuses the sandbox and persisted filesystem; it does not itself replay conversation history. Adding <code>conversation</code> or <code>previous_response_id</code> changes what is being compared. For Invocations, the session binding is a query parameter instead, so do not copy the Responses body convention into that protocol. Application code may also keep its own session state; inspect it before claiming complete workload isolation.</p>
+<p>This focused timing fragment assumes an existing authenticated HTTP client, safe request headers, and a correct SSE parser that handles split UTF-8 data, multiline events, and errors. It deliberately omits transport setup, session persistence, exception handling, and publication/export logic. Instrument existing code rather than mistaking the fragment for the original experiment client.</p>
+<pre><code class="language-python">from time import perf_counter
+
+first_text_ms = None
+completed_ms = None
+start = perf_counter()
+async with client.stream("POST", invocation_url,
+                         headers=headers, json=payload) as response:
+    headers_ms = (perf_counter() - start) * 1000
+    response.raise_for_status()
+    async for event in parse_sse(response):
+        elapsed_ms = (perf_counter() - start) * 1000
+        if (event.get("type") == "response.output_text.delta"
+                and event.get("delta") and first_text_ms is None):
+            first_text_ms = elapsed_ms
+        if event.get("type") == "response.completed":
+            completed_ms = elapsed_ms
+    stream_end_ms = (perf_counter() - start) * 1000
+# Validate response status and observed start type before accepting a sample.
+# Never treat a timeout as successful stream completion.</code></pre>
+<p>The source client used bounded HTTP and overall waits, no automatic client retry, and explicit permission to stop the saved test session. Those safeguards did not disable SDK retries inside the agent. A client timeout or cancellation does not prove server-side work stopped. The source also stored real configuration and correlation IDs locally and relied on a returned session header; current official examples describe session information in the response payload as well. A reusable public client would need a reviewed protocol-compatible binding strategy, safe exports, and failure-path tests. No executable download is supplied here.</p>
+
+<h2 id="measurements">Five recorded calls, not five interchangeable cold starts</h2>
+<p>The table preserves the source's grouped order: the first session's Cold → Warm → Resume sequence, followed by two additional Cold-only sessions. A, B, and C are publication labels, not real session identifiers. The source provides no Warm or Resume measurements for B or C. All five listed calls completed normally and matched the requested start classification.</p>
+<table><thead><tr><th>Recorded row</th><th>Start class</th><th>Session relationship</th><th>HTTP request start → stream end (s)</th></tr></thead><tbody>
+<tr><td>1</td><td>Cold</td><td>A: new session</td><td>83.74</td></tr>
+<tr><td>2</td><td>Warm</td><td>A: same running session</td><td>6.78</td></tr>
+<tr><td>3</td><td>Resume</td><td>A: same session after explicit stop and idle confirmation</td><td>25.92</td></tr>
+<tr><td>4</td><td>Cold</td><td>B: separate new session</td><td>18.10</td></tr>
+<tr><td>5</td><td>Cold</td><td>C: separate new session</td><td>25.35</td></tr>
+</tbody></table>
+<p>The first session's stop/poll wait was 8.15 seconds, excluded from its 25.92-second Resume result. Cold varied from 83.74 to 18.10 to 25.35 seconds without a reported configuration change. Container readiness was approximately 4.3–4.5 seconds, not the entire Cold response time. The available notes do not expose a per-call readiness breakdown, so a stacked chart assigning invented component values to these five calls would be misleading.</p>
+<p>Within this small set, the single Warm observation was shorter than the Cold and Resume observations. That is an observation, not a controlled estimate of the benefit of keeping sessions warm. The sample has three Cold calls but only one Warm and one Resume, with no randomized order or repeated paired trials. No averages, percentiles, confidence intervals, or promised latency targets are derived here.</p>
+
+<h2 id="component-timings">What the first session's logs narrowed down</h2>
+<p>The historical investigation correlated the first session's three calls with existing Application Insights and Foundry logs. The following values are different observations inside those calls, not additive parts of the preceding totals.</p>
+<table><thead><tr><th>Observed interval (seconds)</th><th>Cold, session A</th><th>Warm, session A</th><th>Resume, session A</th></tr></thead><tbody>
+<tr><td>Initial internal response-storage round trip</td><td>11.46</td><td>0.16</td><td>11.40</td></tr>
+<tr><td>Project API interval on the model-request path</td><td>43.54</td><td>0.49</td><td>0.54</td></tr>
+<tr><td>Model-usage log time to last token</td><td>21.05</td><td>4.07</td><td>3.82</td></tr>
+</tbody></table>
+<p>The first Cold call had a long model-request path, but the reason for its 43.54-second project API interval remains unexplained. That interval is not pure model inference. Likewise, the storage round trip includes more than backend storage execution. Roughly 11.4 seconds occurred for both Cold and Resume, so that observation alone cannot explain their large difference in total duration.</p>
+<p>No evidence of HTTP 429 or retries was found within the queried records; that is not proof that no retry occurred anywhere. Some Cold child spans were missing. MCP communication in the examined baseline traces represented initialization and tool discovery, which must not be relabeled as business-tool execution. An empty tool list in the client stream also cannot prove the absence of internal activity.</p>
+
+<h2 id="traces">Read traces as a timeline, not a shopping list</h2>
+<p>Parent spans include child work; siblings can run concurrently; client, platform, and model logs may start and stop at different boundaries. Adding every visible duration double-counts work. To explain wall-clock time, align the operation and parent-child relationships, inspect overlap on a common timeline, and find the critical path. Cross-system timestamps require attention to clock alignment and instrumentation gaps.</p>
+<p>A separate historical tool-request capture showed a 25.9-second top-level transaction. Its search-tool span was 754 ms, containing a 750 ms child interval with 455 ms of token acquisition and a 291 ms search HTTP request. These are nested intervals, not additional independent delays. The capture is not one of the five baseline rows, and its start class cannot be determined from that image alone. The original images and tool names are not reproduced.</p>
+<p>Compare like with like: a model-usage time to last token, an agent invocation span, response-header commitment, and client stream closure answer different questions. Uninstrumented time is “unexplained,” not automatically platform cold start, Python import time, or network delay. Add spans around initialization, credentials, model requests, tool discovery, tool execution, retries, serialization, and output buffering before assigning cause.</p>
+
+<h2 id="troubleshooting">Choose the next measurement from the symptom</h2>
+<table><thead><tr><th>Symptom</th><th>Next check</th><th>Avoid this conclusion</th></tr></thead><tbody>
+<tr><td>Missing latency headers or unexpected class</td><td>Confirm the opt-in header, protocol, successful proxy response, and correct session binding; preserve the unknown or mismatched result.</td><td>“No infrastructure header means zero startup cost.”</td></tr>
+<tr><td>High infrastructure or preprocessing time</td><td>Compare several correctly classified calls. Retain timestamps, response correlation, and headers privately for an authorized support investigation.</td><td>“A local package change will fix platform admission.”</td></tr>
+<tr><td>High container readiness</td><td>Timestamp process startup, imports, dependency loading, and readiness. Check whether work is performed before the application can accept requests.</td><td>“Everything before the first application log is import time.”</td></tr>
+<tr><td>Headers arrive early but useful text arrives late</td><td>Compare first body chunk with first answer delta; inspect model, tool, retry, and buffering spans.</td><td>“Headers or an SSE keep-alive mean the answer has started.”</td></tr>
+<tr><td>First text arrives early but completion is late</td><td>Examine output length, inter-token timing, later tool work, completion events, and stream closure separately.</td><td>“A short first-text time means a short total response.”</td></tr>
+<tr><td>Client timeout or incomplete stream</td><td>Record failure and partial timings, retain the known session privately, and investigate whether server work continues before retrying.</td><td>“The timeout is a completed sample or a guaranteed cancellation.”</td></tr>
+</tbody></table>
+<p>Official diagnostics also document that trailers can disappear through gateways or SDKs, after cancellation, or after a midstream error. Stored-result headers may arrive later; asynchronous results expose only platform-overhead timing, and failed proxy responses and WebSocket invocations do not emit the same latency headers. Absence must be interpreted in that context, not silently coerced to zero.</p>
+
+<h2 id="decisions">No optimization was proven by these observations</h2>
+<p>The defensible result is a narrower investigation, not a demonstrated fix. The first Cold call was unusually long in this sample, readiness was relatively stable, and a long project API interval remains unresolved. No before/after change in these records proves that a smaller image, a different model, a longer idle timeout, extra capacity, or a warm-up request would remove the delay.</p>
+<p>Current Microsoft guidance recommends measuring startup work, moving package installation and compilation into the image build, and inspecting model and tool latency separately. Apply such changes only against an identified bottleneck, then repeat a controlled comparison. Deferring initialization can move delay from readiness into the first request instead of eliminating it. Keeping compute active can change cost and session behavior; it is not a free or guaranteed latency remedy.</p>
+<p>For a future evaluation, hold the agent version, prompt, model settings, tool policy, and connection policy constant; record input/output token counts; collect multiple independent sessions and repeated warm observations; and report failures alongside successes. Publish timing boundaries and the actual observed start class with every sample. That makes the evidence useful even when the root cause is still unknown.</p>
+
+<h2 id="references">Official definitions and further reading</h2>
+<ul>
+<li><a href="https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/debug-hosted-agent#diagnose-invocation-latency" target="_blank" rel="noopener noreferrer">Microsoft Learn: diagnose invocation latency</a> defines the opt-in headers, component boundaries, completion trailers, stored timings, and diagnostic limitations.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/manage-hosted-sessions#how-each-protocol-binds-an-invocation-to-a-session" target="_blank" rel="noopener noreferrer">Microsoft Learn: manage hosted-agent sessions</a> distinguishes sessions from conversations and documents protocol-specific bindings and idle configuration.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/hosted-agents" target="_blank" rel="noopener noreferrer">Microsoft Learn: hosted agents in Foundry Agent Service</a> describes platform and application responsibilities and the session execution model.</li>
+</ul>
+<p>These public references were checked for this article's measurement terminology. They do not certify the historical environment or convert these observations into service guarantees. Original private records and identifiers remain unpublished.</p>

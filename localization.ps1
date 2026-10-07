@@ -37,6 +37,7 @@ function Assert-UiTranslation($locales) {
 }
 function Assert-ArticleParity($english, $korean) {
     if ($english.slug -cne $korean.slug -or $english.category -cne $korean.category) { throw "Translation topic identity mismatch: $($english.slug)" }
+    if ($english.publishedOn -cne $korean.publishedOn) { throw "Translation publication date mismatch: $($english.slug)" }
     $enBody = $english.bodyHtml.Replace("`r`n","`n")
     $koBody = $korean.bodyHtml.Replace("`r`n","`n")
     foreach ($pattern in @('<pre\b[^>]*>.*?</pre>', '<code\b[^>]*>.*?</code>', '<[a-zA-Z][^<>]*\sid="[^"]+"[^<>]*>', '<a\b[^>]*>')) {
