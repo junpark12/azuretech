@@ -1,6 +1,10 @@
 {
-  "sourceSha256": "C04ECFBFEC8F7D2E103A4D3A74E25B08D71FB83C915D2313D151300769E31A9A",
+  "sourceSha256": "C8B876BE53DA674A0F6BAED8A73A4B9DB74AA84E22E0087AA51A1DE57397DCA1",
   "topics": {
+    "copilot-fusion": {
+      "title": "처리 수준을 선택하되 라우팅과 증거를 구분합니다",
+      "caption": "실측 트레이스나 수준별 고정 실행 패턴이 아니라 제품 흐름의 개념도입니다. Fusion은 플랜·정책상 허용된 모델과 실행 방식을 선택해 최종 답변 하나를 제공합니다. 본문의 과거 모델 이름만으로 평가·상향·비평·수정 관계를 확정할 수는 없습니다."
+    },
     "openai-foundry-migration": {
       "title": "클라이언트 연결 규약은 유지하고 사설 경로는 교체합니다",
       "caption": "동시에 활성화된 두 엔드포인트가 아니라 전후 경로를 비교한 개념도입니다. 계정 전환 전후에 동일한 VM ID, OpenAI 호스트 이름, 배포와 클라이언트를 사용했습니다. 기존 Private Endpoint를 교체했고 Private DNS가 다른 주소를 제공했습니다. 두 번의 성공 호출은 무중단, 롤백 성공이나 새 Foundry 기능의 동작을 입증하지 않습니다."

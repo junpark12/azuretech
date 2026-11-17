@@ -1,4 +1,21 @@
 {
+  "copilot-fusion": {
+    "title": "Choose effort; distinguish routing from evidence",
+    "caption": "Conceptual product flow, not a measured trace or fixed tier-to-pattern mapping. Fusion selects eligible models and execution patterns under plan and policy constraints, returning one final answer. The historical model labels in this article do not establish judging, escalation, critique, or revision relationships.",
+    "nodes": [
+      {"x":24,"y":72,"title":"Task + effort","detail":"Standard / High / Max","icon":"client"},
+      {"x":275,"y":72,"title":"Fusion runtime","detail":"Models + reasoning","icon":"gateway","accent":true},
+      {"x":526,"y":72,"title":"Execution pattern","detail":"Single / Cascade / Critique","icon":"layers"},
+      {"x":275,"y":232,"title":"Plans + policies","detail":"Eligible models only","icon":"shield"},
+      {"x":526,"y":232,"title":"One final answer","detail":"Review workspace edits","icon":"tools"}
+    ],
+    "edges": [
+      {"d":"M194 112 H275","x":234,"y":100,"label":"request"},
+      {"d":"M445 112 H526","x":484,"y":100,"label":"select"},
+      {"d":"M360 232 V152","x":406,"y":197,"label":"constrain","dashed":true},
+      {"d":"M611 152 V232","x":652,"y":197,"label":"execute"}
+    ]
+  },
   "openai-foundry-migration": {
     "title": "Keep the client contract; replace the private path",
     "caption": "Conceptual before/after path, not simultaneous active endpoints. The same VM identity, OpenAI hostname, deployment and client were used before and after the account upgrade. The old private endpoint was replaced and private DNS supplied a different address. Two successful calls do not establish zero downtime, successful rollback or working new Foundry features.",

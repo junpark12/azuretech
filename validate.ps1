@@ -9,9 +9,9 @@ Read-KoreanVisualText
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Web.Extensions
 $jsonParser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-if ($manifest.topicCount -ne 16) { throw 'The public edition must contain exactly 16 topics.' }
+if ($manifest.topicCount -ne 17) { throw 'The public edition must contain exactly 17 topics.' }
 Assert-SameSequence @('en','ko') @($manifest.languages) 'published languages'
-if ($manifest.pageCount -ne 34) { throw 'Expected 34 bilingual pages.' }
+if ($manifest.pageCount -ne 36) { throw 'Expected 36 bilingual pages.' }
 foreach ($slug in @('openai-foundry-migration','hosted-agent-latency','aks-hyperscale')) {
     $category = if ($slug -eq 'aks-hyperscale') { 'AKS' } else { 'AI' }
     if (@($manifest.topics | Where-Object { $_.slug -eq $slug -and $_.category -eq $category -and $_.publishedOn -eq '2026-10-07' }).Count -ne 1) { throw "New topic missing or incorrect: $slug" }
@@ -19,11 +19,12 @@ foreach ($slug in @('openai-foundry-migration','hosted-agent-latency','aks-hyper
 if (@($manifest.topics | Where-Object { $_.slug -eq 'aks-confidential-vm' -and $_.category -eq 'AKS' }).Count -ne 1) { throw 'The AKS CVM topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.slug -eq 'content-safety-streaming' -and $_.category -eq 'AI' }).Count -ne 1) { throw 'The Content Safety streaming topic is missing or duplicated.' }
 if (@($manifest.topics | Where-Object { $_.slug -eq 'self-hosted-aca' -and $_.category -eq 'GitHub' }).Count -ne 1) { throw 'The GitHub ACA runner topic is missing or duplicated.' }
+if (@($manifest.topics | Where-Object { $_.slug -eq 'copilot-fusion' -and $_.category -eq 'GitHub' -and $_.publishedOn -eq '2026-11-17' }).Count -ne 1) { throw 'The Copilot Fusion topic is missing or incorrect.' }
 if (@($manifest.topics | Where-Object { $_.category -eq 'App Modernization' }).Count) { throw 'Excluded subject present.' }
 $files = @(Get-ChildItem $root -File -Recurse -Force)
 $problems = New-Object 'System.Collections.Generic.List[string]'
 $htmlFiles = @($files | Where-Object { $_.Extension -eq '.html' })
-if ($htmlFiles.Count -ne 34) { $problems.Add("Expected 34 HTML files, found $($htmlFiles.Count).") }
+if ($htmlFiles.Count -ne 36) { $problems.Add("Expected 36 HTML files, found $($htmlFiles.Count).") }
 $guidPattern = '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'
 $publicRoleIds = @('5e0bd9bd-7b93-4f28-af87-19fc36ad61bd') # Cognitive Services OpenAI User.
 $checks = @{

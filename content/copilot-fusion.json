@@ -1,0 +1,21 @@
+{
+  "slug": "copilot-fusion",
+  "category": "GitHub",
+  "title": "GitHub Copilot Fusion: Model Routing, Execution Patterns, and Evidence Boundaries",
+  "summary": "Understand Standard, High, and Max; distinguish Single, Cascade, and Critique; and interpret historical model logs and Aspire traces without overclaiming what they prove.",
+  "publishedOn": "2026-11-17",
+  "bodyFile": "copilot-fusion.html",
+  "sourceDocuments": [
+    "Reviewed Korean Fusion learning notes and historical log/trace summaries, November 16, 2026",
+    "Chomado: Japanese introduction to Copilot Fusion, published November 4 and updated November 5, 2026",
+    "GitHub Docs: About GitHub Copilot Fusion; GitHub Changelog: October 28, 2026 release; reviewed November 17, 2026",
+    "Copilot CLI 1.0.113-0 built-in documentation: model selection and fusionTier configuration"
+  ],
+  "downloads": [],
+  "omissions": [
+    "Original session and correlation identifiers, local user paths, private configuration, raw logs, and original screenshots are not published.",
+    "The November 16 model records and approximate Aspire timings are reproduced from the supplied notes, not independently remeasured or verified against raw telemetry for this article.",
+    "No benchmark, billing measurement, controlled Standard/High comparison, or execution-pattern detector was run. Illustrative costs are not prices, official billing guidance, or an SLA.",
+    "Third-party prose and graphics are not reproduced wholesale. This article is a new synthesis with attribution; original workspace code and test files are not redistributed."
+  ]
+}

@@ -1,0 +1,193 @@
+<h2 id="overview">Fusion selects a workflow, not just a model</h2>
+<p><strong>GitHub Copilot Fusion is a runtime model router and orchestrator, not a new foundation model.</strong> Instead of repeatedly choosing a model, you select an effort level; Fusion selects models, per-step reasoning effort, and an execution pattern, returning one final response. A useful analogy is a technical lead assigning both the developer and the review process.</p>
+<blockquote><strong>Independent learning notes, not official guidance, a pricing commitment, or an SLA.</strong> Product claims were checked against GitHub documentation on November 17, 2026. Historical observations below come from supplied November 16 notes; raw logs and screenshots were not independently inspected for this publication. They do not establish repeatable routing rules, quality gains, latency distributions, or cost savings. Availability, model pools, plans, prices, and UI can change.</blockquote>
+<p>This article reorganizes the supplied learning material and acknowledges <a href="https://zenn.dev/microsoft/articles/261104-copilot-fuison" target="_blank" rel="noopener noreferrer">Chomado's Japanese introduction</a>, published November 4 and updated November 5, 2026. It is not a full translation. The <a href="https://github.blog/changelog/2026-10-28-route-and-orchestrate-models-with-github-copilot-fusion/" target="_blank" rel="noopener noreferrer">October 28, 2026 GitHub release announcement</a> establishes the GA date; the current <a href="https://docs.github.com/en/copilot/concepts/models/copilot-fusion" target="_blank" rel="noopener noreferrer">Fusion concept documentation</a> supplies the detailed behavior.</p>
+<pre><code class="language-text">Task + selected effort level
+             |
+             v
+       Copilot Fusion
+  model availability + policies
+             |
+     +-------+--------+
+     |       |        |
+   Single  Cascade  Critique
+     |       |        |
+     +-------+--------+
+             |
+             v
+      One final response</code></pre>
+<p>Fusion need not call several models for every task. Conversely, seeing one final answer does not imply only one model participated.</p>
+
+<h2 id="concepts">Separate models, agents, routing, and reasoning</h2>
+<table><thead><tr><th>Concept</th><th>Meaning</th></tr></thead><tbody>
+<tr><td>Model</td><td>The language model that generates text, code, or a proposed next action.</td></tr>
+<tr><td>Coding agent</td><td>A model combined with instructions, file access, tools, and an execution loop. The environment affects the outcome.</td></tr>
+<tr><td>Routing</td><td>Selecting which model should do the work.</td></tr>
+<tr><td>Orchestration</td><td>Coordinating stages and roles, such as drafting, judging, critiquing, and revision.</td></tr>
+<tr><td>Reasoning effort</td><td>A model's reasoning setting for a step; it is not identical to the overall Fusion effort level.</td></tr>
+<tr><td>Tokens, latency, and AI credits</td><td>Text-processing units, elapsed response time, and a Copilot usage-accounting unit respectively. None is a direct measure of answer quality.</td></tr>
+</tbody></table>
+<p>Fusion combines model choice, reasoning effort, and workflow selection. A small rename and a compatibility-sensitive change across several services can warrant different treatment, even in the same conversation.</p>
+<p>A context window limits what the model in a particular step can process. Fusion does not create its own larger context window; its displayed limit is conservative relative to its models. Official documentation says the main conversation stays on the same model when possible to preserve cached-token benefits, while assisting models receive only the context they need. Routing considers cache boundaries, changes in conversation complexity, system health, and availability rather than switching models blindly on every turn.</p>
+
+<h2 id="effort-levels">Standard, High, and Max describe priorities</h2>
+<table><thead><tr><th>Effort level</th><th>Documented priority</th><th>Illustrative starting point</th></tr></thead><tbody>
+<tr><td><code>Standard</code></td><td>Balance cost, quality, and latency; select one model per task.</td><td>Function explanations and small, clearly testable changes.</td></tr>
+<tr><td><code>High</code></td><td>Balanced orchestration where additional calls can justify their time and credits.</td><td>A substantial bug fix or a well-scoped change across files.</td></tr>
+<tr><td><code>Max</code></td><td>Frontier capability, deepest reasoning, and thorough analysis while considering token efficiency.</td><td>A difficult concurrency problem with several plausible causes.</td></tr>
+</tbody></table>
+<p>These workload examples are learning aids, not a published routing algorithm. High does not mean exactly two models, Max does not mean every model runs, and neither guarantees correctness. In particular, do not assume a one-to-one mapping between the three effort levels and the three execution patterns.</p>
+<p>The documentation also describes <strong>Fusion Fast</strong> for fast-model scenarios in VS Code inline chat. It is not user-selectable. This article focuses on the three selectable effort levels, not the separate local-model routing preview.</p>
+
+<h2 id="execution-patterns">Single, Cascade, and Critique answer different questions</h2>
+<h3>Single: one model completes the task</h3>
+<pre><code class="language-text">Request -> model A -> final result</code></pre>
+<p>One model can still read files, call tools, run tests, and be invoked repeatedly as the agent processes tool results. Single does not mean one API call or no tools. Explaining a small function is an intuitive example, not proof that a particular explanation used Single.</p>
+<h3>Cascade: inspect a draft, then escalate only if necessary</h3>
+<pre><code class="language-text">Request -> efficient model's draft -> judge
+                                      |
+                         +------------+------------+
+                         |                         |
+                       accept                   escalate
+                         |                         |
+                       result              stronger model -> result</code></pre>
+<p>The defining feature is conditional escalation within the task. For example, a date-parser draft might handle ordinary dates but miss a time-zone boundary. The judge decides whether to accept or escalate; its full decision criteria are not public. A different model appearing on a later user request is not, by itself, Cascade.</p>
+<h3>Critique: independent feedback followed by revision</h3>
+<pre><code class="language-text">Request -> model A's draft
+                   |
+             +-----+-----+
+             |           |
+          critic B    critic C
+             |           |
+             +-----+-----+
+                   |
+          aggregated feedback
+                   |
+          model A revises -> final result</code></pre>
+<p>The current concept documentation describes multiple independent critiques in parallel, aggregated for revision by the original model. The release announcement presents a simpler draft-review-revise description. The diagram is conceptual: B and C are illustrative labels, not observed model assignments or a guaranteed reviewer count.</p>
+<p>A discount calculator might benefit from one critique about rounding and another about negative amounts or duplicate discounts. These are hypothetical review perspectives, not fixed product roles. Additional calls can increase time and usage; multi-model processing is not automatically faster.</p>
+
+<h2 id="historical-model-records">Historical observation: two requests recorded different models</h2>
+<p>The supplied notes report VS Code chats with Fusion on November 16, 2026: a function explanation using Standard, followed by a more involved order-calculation change using High. The small function was:</p>
+<pre><code class="language-python">def greet(name):
+    return f"Hello, {name}!"
+
+
+if __name__ == "__main__":
+    print(greet("Python"))</code></pre>
+<p>The first prompt requested an explanation and a clearer function name. Before the second prompt, the example was expanded to orders, coupons, shipping, remote-area surcharges, and digital goods. That request required preserving the API and validation behavior, respecting the <code>SAVE10</code> minimum and discount cap, checking free shipping after discounts, distinguishing digital-only and mixed orders, and writing and running unit tests.</p>
+<p><strong>Both the task and the effort level changed.</strong> This was not a controlled experiment isolating the effect of Standard versus High. The source notes report these assistant-message model records; timestamps use UTC, corresponding to approximately 17:49 and 17:57 in Korea:</p>
+<pre><code class="language-text">2026-11-16T08:49:09.509Z        gpt-6-luna
+2026-11-16T08:49:13.951Z        gpt-6-luna
+2026-11-16T08:49:18.056Z        gpt-6-luna
+2026-11-16T08:57:04.540Z        gpt-6.1-sol
+2026-11-16T08:57:04.546Z        gpt-6.1-sol
+2026-11-16T08:57:04.550Z        gpt-6.1-sol
+2026-11-16T08:57:04.557Z        gpt-6.1-sol
+2026-11-16T08:57:04.562Z        gpt-6.1-sol
+2026-11-16T08:57:04.567Z        gpt-6.1-sol
+2026-11-16T08:57:04.571Z        gpt-6.1-sol
+2026-11-16T08:57:04.576Z        gpt-6.1-sol</code></pre>
+<table><thead><tr><th>Record</th><th>Reported observation</th><th>Not established</th></tr></thead><tbody>
+<tr><td>Standard explanation</td><td><code>gpt-6-luna</code> appeared in the model field.</td><td>That this request necessarily used Single.</td></tr>
+<tr><td>High code change</td><td><code>gpt-6.1-sol</code> appeared; file reading, test creation/execution, editing, and test re-execution were recorded.</td><td>That this request used Cascade or Critique, or that all internal calls were logged.</td></tr>
+<tr><td>Difference between requests</td><td>The recorded model name changed.</td><td>Which changed input caused the choice, or whether escalation occurred within either request.</td></tr>
+</tbody></table>
+<p>Repeated rows with the same model name do not count independent models or critics. Test-and-edit loops also occur in ordinary single-model agent work. The sound conclusion is limited: the notes record different model names on different requests while Fusion was selected.</p>
+
+<h2 id="inspect-local-logs">Inspect local records without turning them into a pattern detector</h2>
+<p>The notes used a local CLI-format event log to inspect those chats. In an authorized environment, first correlate the session's user prompt and time with the intended chat; the most recently modified directory can belong to a different CLI conversation. Availability and schema of these records depend on the client and version.</p>
+<p>This read-only Bash example requires <code>jq</code>. Replace the placeholder privately with the intended session ID. It deliberately omits tool arguments because they can contain source code, private paths, prompts, or credentials. Do not publish raw output without reviewing it.</p>
+<pre><code class="language-bash">f="$HOME/.copilot/session-state/SESSION_ID/events.jsonl"
+
+jq -r 'select(.type=="assistant.message") | [.timestamp, .data.model] | @tsv' "$f"
+
+jq -r 'select(.type=="tool.execution_start") | [.timestamp, .data.toolName] | @tsv' "$f"</code></pre>
+<p>These fields were reported in the historical environment; this is not an official Fusion diagnostic command or a stable logging contract. Missing model fields are unknown, not evidence that no model ran. Reading the file changes no configuration, but running a coding prompt can edit the workspace and consume credits. No logging or telemetry configuration was changed for this publication.</p>
+
+<h2 id="aspire-trace">Historical Aspire trace: model names do not reveal internal roles</h2>
+<p>A later High request asked for partial-refund logic in <code>refunds.py</code>: discount allocation, whole-won remainder handling, duplicate-request idempotency, cumulative returned-quantity limits, and state preservation on error. The source notes transcribe the following from a user-provided Aspire screen, not from a raw span export:</p>
+<pre><code class="language-text">invoke_agent                           ~2.8 seconds
+`-- chat gpt-6.1-sol                    ~2.77 seconds
+
+invoke_agent                           ~1 minute 40 seconds
+|-- chat gpt-6-luna                     ~5.17 seconds
+|-- permission                         11ms / 19ms / 15ms
+|-- chat gpt-6-luna                     ~27.76 seconds
+|-- chat gpt-6-luna                     ~45.25 seconds
+|-- chat gpt-6-luna                     ~2.57 seconds
+|-- chat gpt-6-luna                     ~18.44 seconds
+|-- chat auto
+|-- execute_tool view
+|-- execute_tool view
+|-- execute_tool glob
+|-- chat auto
+|-- execute_tool apply_patch
+|-- execute_tool apply_patch
+|-- chat auto
+|-- execute_tool bash bash
+`-- chat auto</code></pre>
+<p>The list preserves screen-row order, not a verified execution sequence. Durations are approximate displayed observations, not additive component timings, a representative benchmark, or an SLA. Nested or overlapping spans must not be summed into end-to-end latency.</p>
+<table><thead><tr><th>Visible in the source summary</th><th>Interpretation boundary</th></tr></thead><tbody>
+<tr><td>Sol and Luna labels in one trace view, under two separate <code>invoke_agent</code> spans.</td><td>The relationship between the invocations and the reason for the different model names were not established.</td></tr>
+<tr><td>Repeated Luna calls and file-read, search, edit, and shell tool spans.</td><td>Repeated calls need not mean multiple distinct models. Tool names alone do not prove command arguments, success, or a review workflow.</td></tr>
+<tr><td><code>permission</code> and <code>chat auto</code> spans.</td><td>Neither label identifies an evaluator, a critic, or an additional concrete model.</td></tr>
+</tbody></table>
+<p><strong>Even “this definitely was not Single” goes beyond this evidence.</strong> Two agent invocations in a wider trace could each use Single. To establish Cascade or Critique, one would need a request boundary and causal evidence of judging/escalation or critique/aggregation/revision. Those relationships were not verified. A model using tools and then resuming is also consistent with Single.</p>
+
+<h2 id="costs">Additional review can increase tokens and total cost</h2>
+<p>There is no separate Fusion feature charge. GitHub documents billing for each model used at that model's standard rate; High or Max may consume more AI credits than Standard. Reviews can add input tokens for relevant context and drafts, output tokens for feedback, and another revision call.</p>
+<pre><code class="language-text">Illustrative usage components:
+  drafting
++ judging / critique, if used
++ escalation / revision, if used
+
+Not every task incurs every component.</code></pre>
+<p>Passing context between stages does not imply retransmitting the entire conversation without caching on every call. Selective context, cached input, and lower-cost models can offset some overhead. More tokens do not necessarily mean a higher bill across differently priced models; fewer tokens do not guarantee a lower bill either.</p>
+<table><thead><tr><th>Hypothetical method</th><th>Illustrative cost units, not currency</th><th>Total</th></tr></thead><tbody>
+<tr><td>Use the stronger model directly</td><td>10</td><td>10</td></tr>
+<tr><td>Cascade, accept the draft</td><td>2 + 1</td><td>3</td></tr>
+<tr><td>Cascade, escalate</td><td>2 + 1 + 10</td><td>13</td></tr>
+</tbody></table>
+<p>These invented units explain a tradeoff, not actual rates or an observed escalation frequency. A particular task can cost more; average efficiency depends on the workload. Compare the total work needed for an acceptable result, including waiting, retries, follow-up questions, manual fixes, usage, and final quality.</p>
+<p><strong>Time-limited offer:</strong> the official concept documentation reviewed November 17 states a 30% model-cost discount for paid Copilot plans through November 30, 2026. This is not a 30% reduction of the entire subscription price and must not be assumed to continue afterward. Check the current <a href="https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing" target="_blank" rel="noopener noreferrer">model pricing documentation</a> before budgeting.</p>
+
+<h2 id="plans-and-policies">Plans and administrator policies constrain the choices</h2>
+<table><thead><tr><th>Plan group, as documented November 17, 2026</th><th>Standard</th><th>High</th><th>Max</th></tr></thead><tbody>
+<tr><td>Free / Student / Pro</td><td>Included</td><td>Not included</td><td>Not included</td></tr>
+<tr><td>Pro+ / Max</td><td>Included</td><td>Included</td><td>Included</td></tr>
+<tr><td>Business / Enterprise</td><td>Included</td><td>Included</td><td>Included</td></tr>
+</tbody></table>
+<p>The <strong>Copilot Max plan</strong> and the <strong>Fusion Max effort level</strong> are different concepts. Availability on all plans does not mean every level or model is included everywhere.</p>
+<p>Fusion uses eligible models under the subscription and enterprise/organization policies. Administrators can control model availability for Fusion and choose a default effort level. Data-residency, FedRAMP, and evaluation-model restrictions still apply; Fusion does not bypass them. If required models are disabled, Max can be unavailable; if no eligible models remain, Fusion does not appear.</p>
+<p>If a level is missing, check plan entitlement, allowed models and applicable policies, and client version before assuming a UI defect. The documented GA clients are VS Code, Copilot CLI, the Copilot app, and JetBrains IDEs.</p>
+
+<h2 id="benchmarks">Published benchmark results are not local measurements</h2>
+<p>The October 28 GitHub release announcement reports the following Artificial Analysis Coding Agent Index comparison with Claude Code using Opus 5.5 Max:</p>
+<table><thead><tr><th>Metric</th><th>GitHub's reported result</th></tr></thead><tbody>
+<tr><td>Fusion Max score</td><td>60</td></tr>
+<tr><td>Score difference from comparison system</td><td>Within 2 points</td></tr>
+<tr><td>Average API cost per task</td><td>About half</td></tr>
+<tr><td>Tokens used</td><td>About half</td></tr>
+<tr><td>Time per task</td><td>About 40% less</td></tr>
+</tbody></table>
+<p>These are attributed published results, not a benchmark rerun here. A score of 60 is not a claim that your project has a 60% success rate. The agent harness, tools, task set, and evaluation setup matter alongside the models. Average API cost is not the subscription price, and average time savings do not guarantee a 40% improvement for any individual request.</p>
+<p>Model specialization and selective review can make efficiency improvements plausible, but they do not prove which internal mechanism caused the reported savings. Consult <a href="https://benchmarks.github.com/" target="_blank" rel="noopener noreferrer">GitHub Copilot Benchmarks</a> for evaluation context; the two historical observations above are not an independent replication.</p>
+
+<h2 id="auto-and-hydrafusion">Auto, HydraFusion, and subagents are different layers</h2>
+<p>Fusion combines earlier Auto model selection with Project HydraFusion's multi-model orchestration. Auto primarily answered which model to use; Fusion also coordinates how models work together. Existing Auto, HydraFusion, and HydraFusion Max preview selections transition to corresponding Fusion levels according to the release announcement. No separate HydraFusion installation is required.</p>
+<p>UI naming does not imply that every identifier containing <code>auto</code> disappears. The CLI documentation for this build explicitly supports automatic selection with that identifier; prefer the documented commands below rather than guessing aliases.</p>
+<p><strong>Fusion operates separately from subagents and does not start them.</strong> Asking for separate testing and documentation agents is task delegation at another layer, not proof that Fusion used Critique.</p>
+
+<h2 id="getting-started">Start deliberately and inspect the workspace before committing</h2>
+<p>Update a supported client, open its model picker, select Fusion, and choose an available level. Standard is a reasonable learning starting point; consider High for a substantial, scoped task and Max when deeper analysis justifies the possible time and usage. These are recommendations, not guaranteed routing outcomes.</p>
+<p>The following selection examples are documented by <strong>Copilot CLI 1.0.113-0</strong>. Select interactively, or choose automatic routing for the current session:</p>
+<pre><code class="language-text">/model
+/model auto</code></pre>
+<p>To configure the Fusion level for new sessions using Auto and then start a session, the built-in configuration guide documents:</p>
+<pre><code class="language-bash">copilot config fusionTier standard
+copilot --model auto</code></pre>
+<p>The first command changes persisted user configuration. Valid Fusion level values are <code>standard</code>, <code>high</code>, and <code>max</code>; managed settings may override them. Do not execute it just to read the example. Record the previous value privately before changing it, and restore it afterward if the change was only for a trial. These values are not interchangeable with other routing-profile or per-model reasoning settings. The commands were checked in documentation, not executed to alter this environment.</p>
+<p>Official documentation says progress can show steps and models; hovering over the effort-level name below a response can show the models used. Presentation depends on the client. A model list is useful evidence of participation, not automatically a complete causal explanation of the execution pattern.</p>
+<blockquote><strong>Discarded drafts do not automatically undo workspace edits.</strong> Review changed files and diffs, run appropriate tests, and check the final behavior before committing. A draft excluded from the final answer can still have left file changes behind.</blockquote>
+<p>The practical takeaway is to distinguish three things: the effort level you requested, model/tool activity actually recorded, and internal workflow relationships that remain unproven. Keep that distinction when comparing quality, latency, or cost.</p>

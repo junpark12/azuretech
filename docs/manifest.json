@@ -1,5 +1,5 @@
 {
-    "pageCount":  34,
+    "pageCount":  36,
     "resources":  [
                       "downloads/ai-gateway/gateway-requests.http",
                       "downloads/ai-gateway/resource-commands.sh",
@@ -42,6 +42,19 @@
                       "downloads/self-hosted-aca/start.sh"
                   ],
     "topics":  [
+                   {
+                       "title":  "GitHub Copilot Fusion: Model Routing, Execution Patterns, and Evidence Boundaries",
+                       "paths":  {
+                                     "en":  "topics/copilot-fusion.html",
+                                     "ko":  "ko/topics/copilot-fusion.html"
+                                 },
+                       "category":  "GitHub",
+                       "slug":  "copilot-fusion",
+                       "sourceDocumentCount":  4,
+                       "titleKo":  "GitHub Copilot Fusion 이해하기: 모델 라우팅, 실행 패턴, 로그 해석의 한계",
+                       "resourceCount":  0,
+                       "publishedOn":  "2026-11-17"
+                   },
                    {
                        "title":  "Azure OpenAI to Foundry: Keep the Client, Rebuild the Private Path",
                        "paths":  {
@@ -256,7 +269,7 @@
                       "en",
                       "ko"
                   ],
-    "topicCount":  16,
+    "topicCount":  17,
     "portalScreenshots":  [
                               {
                                   "capturedOn":  "2026-09-17",
