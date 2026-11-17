@@ -151,9 +151,22 @@ pre { padding: 24px; margin: 24px 0; border: 1px solid var(--cp-border); border-
 [hidden] { display: none !important; }
 .topic-illustration { margin: -28px -28px 24px; padding: 4px 8px; border-bottom: 1px solid var(--cp-border); border-radius: 16px 16px 0 0; background: var(--cp-bg-elevated); overflow: hidden; }
 .topic-illustration svg { display: block; width: 100%; height: auto; }
-.topic-illustration .diagram-kicker, .topic-illustration .diagram-edge-label, .topic-illustration .diagram-node-detail { display: none; }
-.topic-illustration .diagram-node-title { display: none; }
-.topic-illustration .diagram-node > g { transform: translate(66px, 22px) scale(1.2); }
+.card-art { --art-color: #0078b8; --art-soft: rgba(0, 120, 184, 0.08); }
+.card-art-violet { --art-color: #7554b8; --art-soft: rgba(117, 84, 184, 0.09); }
+.card-art-teal { --art-color: #087c7e; --art-soft: rgba(8, 124, 126, 0.08); }
+.card-art-amber { --art-color: #976400; --art-soft: rgba(191, 142, 0, 0.11); }
+.card-art-coral { --art-color: #ba4b63; --art-soft: rgba(186, 75, 99, 0.08); }
+html[data-theme="dark"] .card-art { --art-color: #74bcff; --art-soft: rgba(116, 188, 255, 0.08); }
+html[data-theme="dark"] .card-art-violet { --art-color: #baa5ff; --art-soft: rgba(186, 165, 255, 0.08); }
+html[data-theme="dark"] .card-art-teal { --art-color: #6cd4ce; --art-soft: rgba(108, 212, 206, 0.08); }
+html[data-theme="dark"] .card-art-amber { --art-color: #f2c567; --art-soft: rgba(242, 197, 103, 0.08); }
+html[data-theme="dark"] .card-art-coral { --art-color: #ff9aaf; --art-soft: rgba(255, 154, 175, 0.08); }
+.card-art-halo, .card-art-fill { fill: var(--art-soft); }
+.card-art-symbol { fill: none; stroke: var(--art-color); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.card-art-solid { fill: var(--art-color); stroke: none; }
+.card-art-glyph { fill: var(--art-color); stroke: none; font-size: 32px; font-weight: 600; }
+.card-art-product { fill: var(--art-color); font-size: 16px; font-weight: 650; letter-spacing: 1.4px; }
+.card-art-detail { fill: var(--cp-text-soft); font-size: 13px; letter-spacing: 1.6px; }
 .technical-visual { margin: 36px 0; background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); border-radius: 16px; overflow: hidden; }
 .visual-heading { padding: 24px 24px 0; }
 .visual-heading .eyebrow { margin-bottom: 12px; }

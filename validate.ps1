@@ -110,6 +110,16 @@ foreach ($file in $htmlFiles) {
     $svgs = [regex]::Matches($html, '<svg\b.*?</svg>', 'Singleline')
     $expectedSvgCount = if ($file.Name -eq 'index.html') { $manifest.topicCount } elseif ($visuals.($file.BaseName).chart) { 2 } else { 1 }
     if ($svgs.Count -ne $expectedSvgCount) { $problems.Add("$($file.Name): expected $expectedSvgCount visual(s), found $($svgs.Count).") }
+    if ($file.Name -eq 'index.html') {
+        $cards = [regex]::Matches($html, '<div class="topic-illustration" data-topic="([^"]+)">(.*?)</div>', 'Singleline')
+        Assert-SameSequence @($manifest.topics.slug) @($cards | ForEach-Object { $_.Groups[1].Value }) "$relativePage card artwork coverage"
+        $symbols = @([regex]::Matches($html, '<g class="card-art-symbol"[^>]*>(.*?)</g>', 'Singleline') | ForEach-Object { $_.Groups[1].Value })
+        if ($symbols.Count -ne $manifest.topicCount -or @($symbols | Select-Object -Unique).Count -ne $manifest.topicCount) { $problems.Add("$relativePage : every topic needs distinct card artwork.") }
+        if ($html -match 'class="diagram-node') { $problems.Add("$relativePage : article diagrams must not be reused as card artwork.") }
+        $otherIndex = Get-Content (Join-Path $root $counterpart.Replace('/','\')) -Raw -Encoding UTF8
+        $otherArt = @([regex]::Matches($otherIndex, '<div class="topic-illustration" data-topic="[^"]+">(.*?)</div>', 'Singleline') | ForEach-Object { $_.Value })
+        Assert-SameSequence @($cards | ForEach-Object { $_.Value }) $otherArt "$relativePage bilingual card artwork"
+    }
     foreach ($svg in $svgs) {
         try { $null = [xml]$svg.Value } catch { $problems.Add("$($file.Name): malformed SVG.") }
         if ($svg.Value -match '<(?:script|foreignObject|image)\b|\son\w+=|(?:href|src)=') { $problems.Add("$($file.Name): unexpected SVG active or external content.") }

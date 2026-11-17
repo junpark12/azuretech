@@ -98,7 +98,11 @@ Editing
   September 2026 article date even as the collection edition advances.
 
 Visuals
-  Topic cards reuse a decorative icon-only version of the article diagram.
+  Topic cards use distinct decorative product/topic pictograms rendered by
+  Topic-Thumbnail in visuals.ps1, not miniature versions of article diagrams.
+  These are original conceptual illustrations, not official product logos.
+  Product and technical labels inside the SVG stay English in both editions.
+  New topics must declare dedicated artwork; there is no generic fallback.
   Article figures have localized captions and accessible text descriptions;
   diagram-internal labels remain English in both editions.
   On narrow screens, diagrams scroll rather than shrinking text to illegibility.

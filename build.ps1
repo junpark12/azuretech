@@ -126,7 +126,7 @@ foreach ($locale in @('en','ko')) {
         $cardDate=if($topic.publishedOn){' &middot; <time datetime="' + (Encode $topic.publishedOn) + '">' + (Encode $topic.publishedOn) + '</time>'}else{''}
         @"
 <article class="topic-card" data-category="$(Encode $topic.category)" data-search="$(Encode $searchText)">
-$(Topic-Diagram $topic.slug -Thumbnail -Locale $locale)
+$(Topic-Thumbnail $topic.slug)
 <span class="eyebrow">$(Encode $topic.category)$cardDate</span><h2><a href="topics/$slug.html">$(Encode $topic.title)</a></h2><p>$(Encode $topic.summary)</p><div class="card-bottom"><span>$(Encode $resourceText)</span><a href="topics/$slug.html" aria-label="$(Encode ((Ui $locale 'read') + ': ' + $topic.title))">$(Encode (Ui $locale 'read')) <span aria-hidden="true">&#8599;</span></a></div>
 </article>
 "@
