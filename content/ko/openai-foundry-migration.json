@@ -9,6 +9,7 @@
     "Azure OpenAI에서 Microsoft Foundry로의 수동 마이그레이션 실습",
     "관리 ID 기반 Private Endpoint 검증 클라이언트",
     "Microsoft Learn: Azure OpenAI를 Microsoft Foundry로 업그레이드",
+    "Microsoft Learn: Azure OpenAI에서 Microsoft Foundry로의 자동 업그레이드 관리, 2026년 11월 17일 확인",
     "Microsoft Learn: Microsoft Foundry 네트워크 격리 구성",
     "Azure CLI 참조: Cognitive Services 계정 업데이트"
   ],
@@ -25,6 +26,6 @@
     "제공 클라이언트는 주소 고정과 출력 축소를 적용하여 별도로 정제한 버전이며, 과거 실습에서 변경 없이 사용한 클라이언트가 아닙니다. 게시 검사는 오프라인으로만 수행했으며 Azure 호출이나 리소스 변경은 하지 않았습니다.",
     "환경별 백업, 배포 템플릿, DNS 내보내기와 자동 파괴적 정리 작업은 의도적으로 제공하지 않습니다. 예제를 적용하기 전에 최신 서비스 문서와 조직의 변경 통제를 검토하세요."
   ],
-  "sourceJsonSha256": "B5E2E492F6F71CBBAAA510B1CAC9063E8D0205756F5F315B7DA831CAB63548F4",
-  "sourceBodySha256": "D329F80AB100D9228F411F181993450938049FE944776A1D2476EA9DC9E37F7E"
+  "sourceJsonSha256": "322F9A071AB3E2BE628304474386ED65C075C3AA089614707347C0E1D9C36EE1",
+  "sourceBodySha256": "22943FFC59EED29C651BE2D75B24862039C907DD13CECB1054368690342BA266"
 }

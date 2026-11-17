@@ -63,7 +63,7 @@
                                  },
                        "category":  "AI",
                        "slug":  "openai-foundry-migration",
-                       "sourceDocumentCount":  5,
+                       "sourceDocumentCount":  6,
                        "titleKo":  "Azure OpenAI에서 Foundry로: 클라이언트는 유지하고 사설 경로는 재구성하기",
                        "resourceCount":  1,
                        "publishedOn":  "2026-10-07"
